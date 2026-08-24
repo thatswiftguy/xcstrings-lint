@@ -47,7 +47,15 @@ jobs:
           git tag -f "$major" "${GITHUB_REF_NAME}"
           git push --force origin "refs/tags/$major"
 
-      - name: Create the GitHub release
+      # Idempotent on purpose: drafting a release in the GitHub UI creates the
+      # tag, which fires this same workflow. Creating it again would fail and
+      # paint the run red for no reason.
+      - name: Create the GitHub release if it does not exist
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists (drafted in the UI); leaving it alone."
+          else
+            gh release create "${GITHUB_REF_NAME}" --generate-notes
+          fi
