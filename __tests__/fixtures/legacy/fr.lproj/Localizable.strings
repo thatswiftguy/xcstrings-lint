@@ -1,0 +1,8 @@
+"greeting" = "Bonjour";
+"farewell" = "Au revoir";
+"quoted" = "Elle a dit \"salut\"";
+"escaped" = "Tab\tici et une ligne\nici";
+"unicode" = "Caf\U00e9";
+"count" = "%lld elements";
+"self_valued";
+bare_key = "Cle simple";

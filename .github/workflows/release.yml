@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Refuse to release a stale dist
+        run: |
+          npm run build
+          git diff --quiet --exit-code dist/ \
+            || { echo "::error::dist/ is out of date at the tagged commit"; exit 1; }
+
+      - name: Check the tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          test "$tag" = "$pkg" \
+            || { echo "::error::tag v$tag does not match package.json version $pkg"; exit 1; }
+
+      # Consumers pin `@v1`. Force-moving the major tag to each release is what
+      # keeps that pin current without anyone editing their workflow.
+      - name: Move the major tag
+        run: |
+          major="$(echo "${GITHUB_REF_NAME}" | cut -d. -f1)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major" "${GITHUB_REF_NAME}"
+          git push --force origin "refs/tags/$major"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes

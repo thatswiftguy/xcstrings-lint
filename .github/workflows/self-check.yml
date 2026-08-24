@@ -1,0 +1,83 @@
+name: Self-check
+
+# The action runs against its own fixtures on every change. This is the best
+# smoke test available -- it exercises the real bundle in a real runner -- and
+# it doubles as a live, always-current usage example.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  passes-on-a-clean-project:
+    name: clean project passes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: check
+        uses: ./
+        with:
+          config: .github/self-check/clean.yml
+          mode: absolute
+          threshold: 100
+          comment: false
+
+      - name: Assert it reported a pass
+        run: |
+          test "${{ steps.check.outputs.passed }}" = "true" \
+            || { echo "::error::expected passed=true, got '${{ steps.check.outputs.passed }}'"; exit 1; }
+          test "${{ steps.check.outputs.issue-count }}" = "0" \
+            || { echo "::error::expected 0 issues, got '${{ steps.check.outputs.issue-count }}'"; exit 1; }
+
+  finds-every-issue-class:
+    name: broken project fails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: check
+        uses: ./
+        with:
+          config: .github/self-check/broken.yml
+          mode: absolute
+          threshold: 100
+          comment: false
+          # The fixtures are broken on purpose; we assert on the outputs
+          # instead of on the job failing.
+          fail: false
+
+      - name: Assert it caught them
+        run: |
+          test "${{ steps.check.outputs.passed }}" = "false" \
+            || { echo "::error::expected passed=false"; exit 1; }
+          test "${{ steps.check.outputs.issue-count }}" -gt 0 \
+            || { echo "::error::expected issues to be found"; exit 1; }
+          echo '${{ steps.check.outputs.coverage }}' | grep -q '"de"' \
+            || { echo "::error::coverage output is missing German"; exit 1; }
+
+      - name: Assert the report mentions the crash-class problem
+        run: |
+          cat <<'REPORT' > report.md
+          ${{ steps.check.outputs.report }}
+          REPORT
+          grep -q 'xcstrings-lint' report.md || { echo "::error::report is empty"; exit 1; }
+          grep -qi 'format specifier\|expected %lld' report.md \
+            || { echo "::error::report did not mention the format specifier mismatch"; cat report.md; exit 1; }
+
+  ratchet-on-a-real-pull-request:
+    name: ratchet against the base branch
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Ratchet mode needs the base branch to compare against.
+          fetch-depth: 0
+
+      - uses: ./

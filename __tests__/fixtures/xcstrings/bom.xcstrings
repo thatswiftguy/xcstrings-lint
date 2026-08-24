@@ -1,0 +1,16 @@
+﻿{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "bom.key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "mit BOM"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

@@ -1,0 +1,53 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "crash.object.for.int" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Sie haben %@ Artikel" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "You have %lld items" } }
+      }
+    },
+    "width.only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "%d Artikel" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld items" } }
+      }
+    },
+    "reordered.positional" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "%2$lld Dateien von %1$@" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%1$@ sent %2$lld files" } }
+      }
+    },
+    "dropped.both" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Nichts hier" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ has %lld items" } }
+      }
+    },
+    "payment_count" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "%lld Zahlungen" } }
+      }
+    },
+    "You have %lld unread" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "%@ ungelesen" } }
+      }
+    },
+    "escaped.percent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "%lld%% erledigt" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld%% done" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

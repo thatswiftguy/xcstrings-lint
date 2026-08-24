@@ -1,0 +1,14 @@
+# xcstrings-lint's own configuration.
+#
+# This repository has no app of its own. Everything under __tests__/fixtures is
+# deliberately broken test data -- malformed JSON, missing translations, format
+# specifier mismatches -- so it is excluded here. The self-check workflow points
+# at those fixtures on purpose, using its own config files.
+paths:
+  - '**/*.xcstrings'
+  - '**/*.strings'
+  - '**/*.stringsdict'
+
+ignore:
+  files:
+    - '__tests__/fixtures/**'

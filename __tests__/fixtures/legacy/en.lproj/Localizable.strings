@@ -1,0 +1,12 @@
+/* Greeting on the home screen */
+"greeting" = "Hello";
+
+// Shown when leaving
+"farewell" = "Goodbye";
+
+"quoted" = "She said \"hi\"";
+"escaped" = "Tab\there and a newline\nhere";
+"unicode" = "Caf\U00e9";
+"count" = "%lld items";
+"self_valued";
+bare_key = "Bare identifier key";

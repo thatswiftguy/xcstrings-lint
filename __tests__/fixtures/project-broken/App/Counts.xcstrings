@@ -1,0 +1,69 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "message.count" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld message" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld messages" } }
+            }
+          }
+        },
+        "ja" : {
+          "variations" : {
+            "plural" : {
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld件" } }
+            }
+          }
+        },
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld wiadomość" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld wiadomości" } }
+            }
+          }
+        }
+      }
+    },
+    "file.count" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : { "state" : "translated", "value" : "%#@files@" },
+          "substitutions" : {
+            "files" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg file" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg files" } }
+                }
+              }
+            }
+          }
+        },
+        "pl" : {
+          "stringUnit" : { "state" : "translated", "value" : "%#@files@" },
+          "substitutions" : {
+            "files" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg plik" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg plików" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

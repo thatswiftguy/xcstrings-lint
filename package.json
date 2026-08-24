@@ -1,0 +1,48 @@
+{
+  "name": "xcstrings-lint",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Catch missing iOS translations before they merge",
+  "keywords": [
+    "xcstrings",
+    "string-catalog",
+    "localization",
+    "i18n",
+    "ios",
+    "swift",
+    "github-action",
+    "lint"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thatswiftguy/xcstrings-lint.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "ncc build src/main.ts -o dist --target es2022 --license licenses.txt",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "all": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "fast-glob": "^3.3.3",
+    "jsonc-parser": "^3.3.1",
+    "picomatch": "^4.0.5",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.12",
+    "@types/picomatch": "^4.0.3",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.11"
+  },
+  "type": "module"
+}

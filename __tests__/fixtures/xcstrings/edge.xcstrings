@@ -1,0 +1,54 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "sollte ignoriert werden"
+          }
+        }
+      }
+    },
+    "bare.entry" : {},
+    "no.localizations" : {
+      "extractionState" : "manual"
+    },
+    "empty.localizations" : {
+      "extractionState" : "manual",
+      "localizations" : {}
+    },
+    "unit.without.state" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "value" : "Zustand fehlt"
+          }
+        }
+      }
+    },
+    "unit.without.value" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "new"
+          }
+        }
+      }
+    },
+    "not.translatable" : {
+      "extractionState" : "manual",
+      "shouldTranslate" : false,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acme"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

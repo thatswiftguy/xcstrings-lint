@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The ncc bundle is generated. Keep it out of diffs and language stats,
+# but it MUST stay committed -- GitHub Actions does not build JS actions.
+dist/** -diff linguist-generated=true
+
+# Fixtures are byte-sensitive: never normalize line endings or encoding.
+__tests__/fixtures/** -text

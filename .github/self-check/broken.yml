@@ -1,0 +1,4 @@
+# Self-check: a project with one of every issue class. The action must find them.
+paths:
+  - '__tests__/fixtures/project-broken/**/*.xcstrings'
+required: [de, fr]

@@ -1,0 +1,3 @@
+# Self-check: a fully translated project. The action must pass.
+paths:
+  - '__tests__/fixtures/project-clean/**/*.xcstrings'

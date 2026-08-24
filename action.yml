@@ -1,0 +1,50 @@
+name: 'xcstrings-lint'
+description: 'Catch missing iOS translations before they merge'
+author: 'thatswiftguy'
+branding:
+  icon: 'globe'
+  color: 'blue'
+
+inputs:
+  config:
+    description: 'Path to config file'
+    required: false
+    default: '.xcstrings-lint.yml'
+  mode:
+    description: 'ratchet | absolute'
+    required: false
+    default: 'ratchet'
+  threshold:
+    description: 'Minimum coverage percent per language (absolute mode only)'
+    required: false
+    default: '100'
+  comment:
+    description: 'Post a sticky PR comment'
+    required: false
+    default: 'true'
+  annotations:
+    description: 'Emit inline file annotations'
+    required: false
+    default: 'true'
+  fail:
+    description: 'Exit non-zero when issues are found'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token used to post the PR comment'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  passed:
+    description: 'true | false'
+  coverage:
+    description: 'JSON object of language -> coverage percent'
+  issue-count:
+    description: 'Total number of blocking issues'
+  report:
+    description: 'Markdown report body'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
