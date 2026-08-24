@@ -13,6 +13,30 @@ Runs on `ubuntu-latest`. No Xcode, no macOS runner, no Apple toolchain — `.xcs
 
 ---
 
+## Quick start
+
+```yaml
+name: Localization
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: thatswiftguy/xcstrings-lint@v1
+```
+
+That's the whole thing — no config file needed. `fetch-depth: 0` lets the default ratchet mode see
+the base branch; without it you get a warning and a less precise comparison, not a failure.
+
+---
+
 ## What your reviewers see
 
 > ### 🌍 xcstrings-lint — **failed**
@@ -42,58 +66,46 @@ works even on fork pull requests.
 
 ---
 
-## Quick start
+## Contributing
 
-```yaml
-name: Localization
-on: pull_request
-
-permissions:
-  contents: read
-  pull-requests: write
-
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
-      - uses: thatswiftguy/xcstrings-lint@v1
+```bash
+npm ci
+npm test          # vitest, 220 tests
+npm run typecheck
+npm run build     # rebuilds dist/
 ```
 
-That's the whole thing — no config file needed. `fetch-depth: 0` lets the default ratchet mode see
-the base branch; without it you get a warning and a less precise comparison, not a failure.
+Node version is pinned in `.nvmrc`. A few things worth knowing before you open a PR:
+
+- **`dist/` is committed and CI checks it.** GitHub doesn't build JS actions, so if `dist/` drifts
+  from `src/` the action silently runs old code. Run `npm run build` and commit the result.
+- **Fixtures live in `__tests__/fixtures/`** — deliberately broken catalogs covering every issue
+  class. Add one alongside any new check.
+- **`self-check.yml` runs the action against those fixtures** on every PR, so the real bundle is
+  exercised in a real runner.
+
+Bug reports are most useful with the `.xcstrings` snippet that triggered them.
 
 ---
 
 ## What it catches
 
-Five translation states, kept separate because they have different urgency and different fixes.
-Collapsing them into one "missing" bucket is what gets a linter muted.
+| Check | Default |
+|---|---|
+| `missing` — no entry in that language | **fail** |
+| `empty` — entry exists, value is `""` | **fail** |
+| `new` — extracted by Xcode, never touched | **fail** |
+| `needsReview` — marked `needs_review` | warn |
+| `stale` — Xcode can't find the key in source | warn |
+| `formatSpecifier` — `%lld` vs `%@`, a runtime crash | **fail** |
+| `pluralCoverage` — missing CLDR plural categories | warn |
 
-| Class | Meaning | Default |
-|---|---|---|
-| `missing` | No entry in that language at all | **fail** |
-| `empty` | Entry exists, `value` is `""` | **fail** |
-| `new` | `state: "new"` — extracted by Xcode, never touched | **fail** |
-| `needsReview` | `state: "needs_review"` | warn |
-| `stale` | `extractionState: "stale"` — Xcode can't find the key in source | warn |
+Format specifiers compare by argument position, so a legitimate reorder passes and a type swap
+fails with `expected %lld at position 1, found %@`. Plural coverage uses a built-in CLDR table:
+Polish needs `one/few/many/other`, Japanese only `other`.
 
-Plus two structural checks that are arguably worth more than the missing-key check.
-
-**Format specifiers.** Source `"You have %lld items"` against German `"Sie haben %@ Artikel"` reads
-a 64-bit integer as an object pointer — a runtime crash, not a cosmetic bug. Comparison is by
-index-to-type, so a legitimate reorder (`%1$@ sent %2$lld files` → `%2$lld Dateien von %1$@`) passes,
-while a type swap fails with `expected %lld at position 1, found %@`. A width-only difference
-(`%lld` vs `%d`) only ever warns.
-
-**Plural coverage.** Polish needs `one`/`few`/`many`/`other`; Japanese needs only `other`; Arabic
-needs all six. Ships a small static CLDR table — no dependency, no network. Locales the table
-doesn't know are never reported against.
-
-Both also look inside String Catalog `substitutions` (`%#@name@`). Legacy projects work too:
-`.strings` tables are grouped by `.lproj`, with UTF-16 detection for the files older Xcode versions
-wrote, and `.stringsdict` plurals are read into the same model.
+Reads `.xcstrings`, plural `substitutions`, legacy `.strings`/`.stringsdict`, and SwiftPM package
+resources. Skips `Pods`, `Carthage`, `.build`, `DerivedData` and `node_modules`.
 
 ---
 
@@ -116,19 +128,13 @@ rewrites large regions of `.xcstrings` JSON on every build.
 
 ## Rolling it out
 
-Start non-blocking, so the team sees reports before anything blocks a merge:
+1. Add the workflow with `continue-on-error: true` — reports appear, nothing blocks.
+2. Once the reports are boring, delete that line.
+3. **Settings → Branches** → your `main` rule → **Require status checks to pass** → tick
+   **`Localization / check`**.
 
-```yaml
-      - uses: thatswiftguy/xcstrings-lint@v1
-        continue-on-error: true
-```
-
-Once the reports are boring, delete that line and turn on branch protection:
-**Settings → Branches** → edit your `main` rule → **Require status checks to pass** → tick
-**`Localization / check`**.
-
-That name is `<workflow name> / <job name>` from your YAML. The check has to have run on a pull
-request at least once before GitHub will offer it.
+That check name is `<workflow name> / <job name>` from your YAML, and it only appears in the list
+after it has run on a pull request once.
 
 ---
 
@@ -166,18 +172,11 @@ pluralCoverage: warn
 Three behaviours worth knowing:
 
 - **An explicit list replaces the default, it doesn't extend it.** `failOn: [missing]` means *only*
-  `missing` fails. Listing a class in both `failOn` and `warnOn` is a config error, not a silent
-  precedence rule.
-- **`node_modules`, `Pods`, `Carthage`, `.build` and `DerivedData` are always skipped.**
-- **`needs_review` still counts as translated** in the percentage — it has a real value in it, which
-  matches Xcode's own figure. It is reported separately, as a warning.
-
-A malformed config gets a pointed error, never a stack trace:
-
-```
-.xcstrings-lint.yml: invalid configuration
-  - pluralCoverage: Invalid enum value. Expected 'error' | 'warn' | 'off', received 'loud'
-```
+  `missing` fails. Listing a class in both `failOn` and `warnOn` is a config error.
+- **`needs_review` still counts as translated** in the percentage, matching Xcode's own figure. It
+  is reported separately, as a warning.
+- **A malformed config gets a pointed error, never a stack trace** — the offending key and the
+  values it accepts.
 
 ### Inputs and outputs
 
@@ -195,31 +194,20 @@ A malformed config gets a pointed error, never a stack trace:
 
 ## Recipes
 
-**Strict gate on release branches** — ratchet on pull requests, full coverage before a release:
+| Want | Add to `with:` |
+|---|---|
+| Report without ever blocking | `fail: false` |
+| Full coverage before a release | `mode: absolute` (see below) |
+| Annotations only, no comment | `comment: false` |
+| Gate only some languages | `required: [de, fr]` in the config file |
+
+Strict on release branches, ratchet everywhere else:
 
 ```yaml
-on:
-  pull_request:
-  push:
-    branches: ['release/**']
-# ...
-      - uses: thatswiftguy/xcstrings-lint@v1
-        with:
-          mode: ${{ startsWith(github.ref, 'refs/heads/release/') && 'absolute' || 'ratchet' }}
+mode: ${{ startsWith(github.ref, 'refs/heads/release/') && 'absolute' || 'ratchet' }}
 ```
 
-**Weekly coverage report** — a standing number that never blocks anyone:
-
-```yaml
-on:
-  schedule: [{ cron: '0 9 * * MON' }]
-# ...
-      - uses: thatswiftguy/xcstrings-lint@v1
-        with:
-          mode: absolute   # scheduled runs have no base branch
-          fail: false
-          comment: false
-```
+Scheduled runs have no base branch, so a weekly report needs `mode: absolute` and `fail: false`.
 
 ---
 
@@ -231,9 +219,8 @@ on:
 | `1` | Blocking issues found |
 | `2` | Misconfiguration, unreadable file, or missing base ref |
 
-`1` and `2` are deliberately different: "your translations are incomplete" and "this tool is set up
-wrong" need different reactions. A `2` always names the file or option at fault, and a file that
-could not be parsed is never quietly reported as 100% covered.
+`2` always names the file or option at fault — a file that couldn't be parsed is never quietly
+reported as 100% covered.
 
 ---
 
@@ -246,10 +233,17 @@ to secrets in the base repository's context.
 
 ---
 
-## Not in v1
+## Roadmap
 
-A standalone CLI or npm package, machine translation and auto-fix pull requests, XLIFF / `.xcloc`,
-Android `strings.xml`, TMS integrations, a web dashboard, Checks API batching.
+Not in v1, roughly in order of likelihood:
+
+- [ ] Machine translation and auto-fix pull requests
+- [ ] XLIFF and `.xcloc` support
+- [ ] Checks API batching, for more than ~10 annotations per run
+- [ ] A standalone CLI, for pre-commit hooks and Xcode build phases
+- [ ] TMS integrations (Lokalise, Crowdin, Phrase)
+- [ ] Android `strings.xml`
+- [ ] A web dashboard
 
 ## License
 
