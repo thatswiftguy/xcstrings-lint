@@ -1,5 +1,6 @@
 import type { AnalysisResult } from '../core/analyze.js'
 import type { ThresholdShortfall } from '../core/coverage.js'
+import type { Mode } from '../lint.js'
 import {
   ALL_ISSUE_CLASSES,
   STATE_ISSUE_CLASSES,
@@ -9,14 +10,25 @@ import {
 
 /** Everything the three reporting surfaces need, computed once by the caller. */
 export interface ReportInput {
+  mode: Mode
   passed: boolean
   result: AnalysisResult
-  /** Every issue found, errors and warnings together. */
+  /** Every issue found at head. */
   issues: Issue[]
   /** The issues that decide pass or fail. */
-  errors: Issue[]
-  /** Reported, never blocking. */
-  warnings: Issue[]
+  blocking: Issue[]
+  /** Everything else found at head. Reported, never blocking. */
+  nonBlocking: Issue[]
+  /** Every issue the base branch has too, blocking or not. */
+  preExisting: Issue[]
+  /** Issues this change introduced, blocking or not. Empty with no base. */
+  newIssues: Issue[]
+  /** Issues the base had and head does not. Credit, never a gate. */
+  fixed: Issue[]
+  /** True when a base branch was resolved and the split above is meaningful. */
+  comparedToBase: boolean
+  /** Revision compared against, for display. */
+  baseLabel?: string | undefined
   shortfalls: ThresholdShortfall[]
   threshold: number
   /** How many files the globs matched. */
@@ -49,6 +61,26 @@ export function pluralise(count: number, singular: string, plural = `${singular}
   return `${count} ${count === 1 ? singular : plural}`
 }
 
+/**
+ * How the two partitions turn into the sections a reader sees.
+ *
+ * `blocking` and `preExisting` overlap freely -- an old problem still blocks in
+ * full mode -- so the display buckets are cut from the non-blocking list and
+ * are guaranteed not to print the same issue twice.
+ */
+
+/** Non-blocking issues the base branch already had. */
+export function carriedIssues(input: ReportInput): Issue[] {
+  const preExisting = new Set(input.preExisting)
+  return input.nonBlocking.filter((issue) => preExisting.has(issue))
+}
+
+/** Non-blocking issues this change is responsible for. */
+export function warningIssues(input: ReportInput): Issue[] {
+  const preExisting = new Set(input.preExisting)
+  return input.nonBlocking.filter((issue) => !preExisting.has(issue))
+}
+
 export interface CoverageRow {
   language: string
   percent: number
@@ -59,7 +91,7 @@ export interface CoverageRow {
 
 export function coverageRows(input: ReportInput): CoverageRow[] {
   const errorsByLanguage = new Map<string, number>()
-  for (const issue of input.errors) {
+  for (const issue of input.blocking) {
     if (!issue.language) continue
     errorsByLanguage.set(issue.language, (errorsByLanguage.get(issue.language) ?? 0) + 1)
   }

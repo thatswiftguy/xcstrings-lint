@@ -1,10 +1,25 @@
 import { isAbsolute, join } from 'node:path'
 import { analyze, type AnalysisResult } from './core/analyze.js'
+import { compareIssues, unifiedLanguages, type Comparison } from './core/compare.js'
 import { ConfigError, loadConfig, type ResolvedConfig } from './core/config.js'
 import { belowThreshold, type ThresholdShortfall } from './core/coverage.js'
-import { scan } from './core/scan.js'
+import { scan, scanWorkingTree } from './core/scan.js'
+import {
+  BaseRefError,
+  gitRevisionFiles,
+  resolveBaseRevision,
+} from './core/revision.js'
 import type { CatalogParseError, Issue } from './core/types.js'
 import type { ReportInput } from './report/model.js'
+
+/**
+ * What decides pass or fail.
+ *
+ * Both modes read the whole repository and report everything they find. The
+ * only difference is the gate: `full` blocks on every problem, `ratchet` blocks
+ * only on the ones this change introduced and shows the rest as context.
+ */
+export type Mode = 'full' | 'ratchet'
 
 export interface LintOptions {
   cwd: string
@@ -12,8 +27,14 @@ export interface LintOptions {
   configPath: string
   /** True when the user named the config path, making "not found" fatal. */
   configExplicit?: boolean
-  /** Minimum coverage percent per language. */
+  mode?: Mode
+  /** Minimum coverage percent per language. Not applied in ratchet mode. */
   threshold?: number
+  /** Base branch to compare against, e.g. `main`. */
+  baseRef?: string | undefined
+  /** Allow a git fetch when the base ref is missing. On in CI, off locally. */
+  allowFetch?: boolean
+  onNotice?: ((message: string) => void) | undefined
   /** Injected for tests; defaults to loading from disk. */
   config?: ResolvedConfig | undefined
 }
@@ -42,14 +63,15 @@ export function lint(options: LintOptions): LintResult {
     ? options.configPath
     : join(options.cwd, options.configPath)
   const config = options.config ?? loadConfig(configPath, options.configExplicit ?? false)
+  const mode = options.mode ?? 'full'
   const threshold = options.threshold ?? 100
 
-  const scanned = scan(options.cwd, config)
+  const head = scanWorkingTree(options.cwd, config)
 
   // Finding nothing is a configuration error, not a pass. A linter that reports
   // "every language is fully translated" because its globs match no files is
   // worse than one that is switched off, because it looks like it is working.
-  if (scanned.matched.length === 0) {
+  if (head.matched.length === 0) {
     throw new ConfigError(
       `no catalog files matched. Searched for:\n` +
         config.paths.map((pattern) => `  - ${pattern}`).join('\n') +
@@ -58,21 +80,82 @@ export function lint(options: LintOptions): LintResult {
     )
   }
 
+  const baseline = resolveBaseline(options, config, mode)
+  const languages = unifiedLanguages(head.catalogs, baseline?.scan.catalogs ?? [])
+  const result = analyze(head.catalogs, config, { languages })
+
+  const comparison = baseline
+    ? compareIssues(result, analyze(baseline.scan.catalogs, config, { languages }), {
+        baseLabel: baseline.label,
+        baseErrors: baseline.scan.errors,
+      })
+    : undefined
+
   return {
     config,
-    parseErrors: scanned.errors,
-    report: buildReport(analyze(scanned.catalogs, config), {
+    // A base we could not parse makes every head issue look new, so it is just
+    // as fatal as one on our own side.
+    parseErrors: [...head.errors, ...(comparison?.baseErrors ?? [])],
+    report: buildReport(result, {
       config,
+      mode,
       threshold,
-      filesScanned: scanned.matched.length,
+      filesScanned: head.matched.length,
+      ...(comparison ? { comparison } : {}),
     }),
   }
 }
 
+interface Baseline {
+  label: string
+  scan: ReturnType<typeof scan>
+}
+
+/**
+ * Load the base revision, if there is one to load.
+ *
+ * In ratchet mode a missing base is fatal: without it there is nothing to
+ * ratchet against and passing everything would be a lie. In full mode it is
+ * only a notice -- the check still works, it just cannot say which problems are
+ * new, so a local run or a `schedule` event degrades instead of failing.
+ */
+function resolveBaseline(
+  options: LintOptions,
+  config: ResolvedConfig,
+  mode: Mode,
+): Baseline | undefined {
+  if (!options.baseRef) {
+    if (mode === 'ratchet') {
+      throw new BaseRefError(
+        'Ratchet mode needs a base branch to compare against, and none was supplied.\n\n' +
+          'Run this on `pull_request`, or use the default `mode: full`.',
+      )
+    }
+    return undefined
+  }
+
+  const { revision, problem } = resolveBaseRevision({
+    cwd: options.cwd,
+    baseRef: options.baseRef,
+    allowFetch: options.allowFetch ?? false,
+    ...(options.onNotice ? { onNotice: options.onNotice } : {}),
+  })
+
+  if (!revision) {
+    if (mode === 'ratchet') throw new BaseRefError(`Ratchet mode ${problem}`)
+    options.onNotice?.(`${problem} -- reporting every issue without marking which are new`)
+    return undefined
+  }
+
+  return { label: revision, scan: scan(gitRevisionFiles(revision, options.cwd), config) }
+}
+
 export interface BuildReportOptions {
   config: ResolvedConfig
+  mode: Mode
   threshold: number
   filesScanned: number
+  comparison?: Comparison
 }
 
 /**
@@ -83,22 +166,46 @@ export interface BuildReportOptions {
  * comment, the summary and the exit code cannot disagree about it.
  */
 export function buildReport(result: AnalysisResult, options: BuildReportOptions): ReportInput {
-  const shortfalls = belowThreshold(result.coverage, options.threshold, {
-    required: options.config.required,
-    sourceLanguages: result.sourceLanguages,
-  })
+  const { comparison, mode } = options
 
-  const errors = result.issues.filter((issue) => issue.severity === 'error')
-  const warnings = result.issues.filter((issue) => issue.severity === 'warn')
+  // Ratchet mode does not apply the coverage threshold. Adding ten translated
+  // strings and one untranslated one moves the percentage *up* while shipping
+  // an untranslated string, so a percentage is the wrong gate for "what did
+  // this change do" -- the set difference is the whole point.
+  const shortfalls =
+    mode === 'ratchet'
+      ? []
+      : belowThreshold(result.coverage, options.threshold, {
+          required: options.config.required,
+          sourceLanguages: result.sourceLanguages,
+        })
 
+  const gated = mode === 'ratchet' && comparison ? comparison.newIssues : result.issues
+  const blocking = gated.filter((issue) => issue.severity === 'error')
+  const blockingSet = new Set(blocking)
+
+  // Two partitions of the same list, and deliberately kept independent of each
+  // other. "Does it block?" and "was it already there?" are different
+  // questions, and every field below answers exactly one of them. An earlier
+  // cut folded them together -- warnings meant "non-blocking and not
+  // pre-existing" -- and the counts built on it were quietly wrong: a run with
+  // six warnings the base also had reported zero warnings. Which bucket the
+  // report *displays* something in is a rendering decision, made in
+  // `carriedIssues` and `warningIssues`, never baked into the data.
   return {
+    mode,
     // Coverage at threshold is not the whole story: a format-specifier mismatch
     // crashes at runtime while coverage still reads 100%.
-    passed: shortfalls.length === 0 && errors.length === 0,
+    passed: shortfalls.length === 0 && blocking.length === 0,
     result,
     issues: result.issues,
-    errors,
-    warnings,
+    blocking,
+    nonBlocking: result.issues.filter((issue) => !blockingSet.has(issue)),
+    preExisting: comparison?.preExisting ?? [],
+    newIssues: comparison?.newIssues ?? [],
+    fixed: comparison?.fixed ?? [],
+    ...(comparison ? { baseLabel: comparison.baseLabel } : {}),
+    comparedToBase: comparison !== undefined,
     shortfalls,
     threshold: options.threshold,
     filesScanned: options.filesScanned,
@@ -111,4 +218,5 @@ export function exitCodeFor(result: LintResult): 0 | 1 | 2 {
   return result.report.passed ? 0 : 1
 }
 
+export { BaseRefError }
 export type { Issue, ThresholdShortfall }

@@ -13,6 +13,7 @@ import {
   renderKeySections,
   renderLanguageCell,
   renderLanguageTable,
+  warningIssues,
 } from '../src/report/model.js'
 import type { ReportInput } from '../src/report/model.js'
 import type { Issue } from '../src/core/types.js'
@@ -141,7 +142,7 @@ describe('annotations', () => {
   })
 
   it('points each annotation at a real line in its own file', () => {
-    const plan = planAnnotations(failingScenario().errors)
+    const plan = planAnnotations(failingScenario().blocking)
     expect(plan.annotations.length).toBeGreaterThan(0)
     for (const annotation of plan.annotations) {
       expect(annotation.file).toBe('App/Localizable.xcstrings')
@@ -152,13 +153,13 @@ describe('annotations', () => {
   })
 
   it('titles each annotation with its issue class and key', () => {
-    const titles = planAnnotations(failingScenario().errors).annotations.map((a) => a.title)
+    const titles = planAnnotations(failingScenario().blocking).annotations.map((a) => a.title)
     expect(titles).toContain('Missing translation: payment_save_card_subtitle')
     expect(titles).toContain('Empty translation: payment_cvv_hint')
   })
 
   it('has a title for every issue class', () => {
-    const warnings = warningScenario().warnings
+    const warnings = warningScenario().nonBlocking
     expect(warnings.length).toBeGreaterThan(0)
     for (const annotation of planAnnotations(warnings).annotations) {
       expect(annotation.title).not.toMatch(/undefined/)
@@ -349,7 +350,7 @@ describe('sticky comment', () => {
 
   it('states how far below the threshold each language is', () => {
     const input = thresholdScenario()
-    expect(input.errors).toEqual([])
+    expect(input.blocking).toEqual([])
     expect(input.passed).toBe(false)
     expect(renderComment(input)).toContain('`fr` at 50%')
   })
@@ -370,14 +371,14 @@ describe('sticky comment', () => {
 
   it('offers the warnings as an expandable section', () => {
     const input = warningScenario()
-    expect(input.errors).toEqual([])
-    expect(input.warnings.length).toBeGreaterThan(0)
+    expect(input.blocking).toEqual([])
+    expect(warningIssues(input).length).toBeGreaterThan(0)
 
     const body = renderComment(input)
     // Still a pass: warnings never decide the verdict.
     expect(body).toContain('**passed**')
     expect(body).toContain(
-      `<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`,
+      `<details><summary><b>Warnings</b> · ${warningIssues(input).length} — not blocking</summary>`,
     )
   })
 

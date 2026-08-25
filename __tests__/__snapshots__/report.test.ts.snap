@@ -105,7 +105,7 @@ Every language is fully translated across 1 file.
 
 </details>
 
-<sub>1 file checked · 2 warnings · <!-- xcstrings-lint --></sub>"
+<sub>1 file checked · <!-- xcstrings-lint --></sub>"
 `;
 
 exports[`sticky comment > renders a report that only misses the coverage threshold 1`] = `

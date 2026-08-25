@@ -1,10 +1,12 @@
-import type { CatalogParseError } from '../core/types.js'
+import type { CatalogParseError, Issue } from '../core/types.js'
 import {
+  carriedIssues,
   code,
   pluralise,
   renderCoverageTable,
   renderKeySections,
   renderLanguageTable,
+  warningIssues,
   type ReportInput,
 } from './model.js'
 
@@ -29,11 +31,11 @@ export function renderSummary(input: ReportInput): string {
     '',
   ]
 
-  if (input.errors.length > 0) {
-    lines.push('### Issues', '')
-    const grouped = renderLanguageTable(languages, input.errors)
+  if (input.blocking.length > 0) {
+    lines.push(`### ${input.mode === 'ratchet' ? 'New issues' : 'Issues'}`, '')
+    const grouped = renderLanguageTable(languages, input.blocking)
     if (grouped) lines.push(grouped, '')
-    for (const section of renderKeySections(input.errors, languages, MAX_DETAIL_ROWS)) {
+    for (const section of renderKeySections(input.blocking, languages, MAX_DETAIL_ROWS)) {
       lines.push(section, '')
     }
   }
@@ -43,18 +45,13 @@ export function renderSummary(input: ReportInput): string {
   // changed in front of them.
   lines.push('### Coverage', '', renderCoverageTable(input), '')
 
-  if (input.warnings.length > 0) {
-    lines.push(
-      `<details><summary>Warnings · ${input.warnings.length}</summary>`,
-      '',
-      renderLanguageTable(languages, input.warnings),
-      '',
-      ...renderKeySections(input.warnings, languages, MAX_DETAIL_ROWS, { collapsed: false }),
-      '',
-      '</details>',
-      '',
-    )
-  }
+  const carried = carriedIssues(input)
+  const warnings = warningIssues(input)
+  lines.push(
+    ...section(input, carried, `Pre-existing issues · ${carried.length}`),
+    ...section(input, warnings, `Warnings · ${warnings.length}`),
+    ...section(input, input.fixed, `Fixed by this change · ${input.fixed.length}`),
+  )
 
   if (input.annotationsDropped) {
     lines.push(
@@ -69,26 +66,47 @@ export function renderSummary(input: ReportInput): string {
     : body
 }
 
+function section(input: ReportInput, issues: Issue[], title: string): string[] {
+  if (issues.length === 0) return []
+  return [
+    `<details><summary>${title}</summary>`,
+    '',
+    renderLanguageTable(input.result.languages, issues),
+    '',
+    ...renderKeySections(issues, input.result.languages, MAX_DETAIL_ROWS, { collapsed: false }),
+    '',
+    '</details>',
+    '',
+  ]
+}
+
 function describeRun(input: ReportInput): string[] {
   const scope =
     `Checked ${pluralise(input.filesScanned, 'file')} — ` +
     `${pluralise(input.result.catalogs.length, 'catalog')} across ` +
     `${pluralise(input.result.languages.length, 'language')}.`
 
-  const shortfalls = input.shortfalls
+  const attribution = input.comparedToBase
+    ? `${pluralise(input.newIssues.length, 'issue')} new vs ${
+        input.baseLabel ? code(input.baseLabel) : 'the base branch'
+      }, ${input.preExisting.length} pre-existing.`
+    : ''
+
   const headline =
-    input.errors.length === 0 && shortfalls.length === 0
-      ? `Every language is at or above ${input.threshold}% coverage.`
+    input.blocking.length === 0 && input.shortfalls.length === 0
+      ? input.mode === 'ratchet'
+        ? 'No new localization issues.'
+        : `Every language is at or above ${input.threshold}% coverage.`
       : [
-          input.errors.length > 0 ? pluralise(input.errors.length, 'blocking issue') : '',
-          shortfalls.length > 0
-            ? `${pluralise(shortfalls.length, 'language')} below the ${input.threshold}% threshold`
+          input.blocking.length > 0 ? pluralise(input.blocking.length, 'blocking issue') : '',
+          input.shortfalls.length > 0
+            ? `${pluralise(input.shortfalls.length, 'language')} below the ${input.threshold}% threshold`
             : '',
         ]
           .filter(Boolean)
           .join(', ') + '.'
 
-  return [headline, '', scope]
+  return [headline, '', scope, ...(attribution ? ['', attribution] : [])]
 }
 
 /**

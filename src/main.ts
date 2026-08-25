@@ -1,7 +1,9 @@
 import * as core from '@actions/core'
+import * as github from '@actions/github'
 import { postComment } from './action/comment.js'
-import { readInputs, removedModeNotice, type ActionInputs } from './action/inputs.js'
+import { detectBaseRef, readInputs, type ActionInputs } from './action/inputs.js'
 import { ConfigError } from './core/config.js'
+import { BaseRefError } from './core/revision.js'
 import { CatalogParseError } from './core/types.js'
 import { exitCodeFor, lint, type LintResult } from './lint.js'
 import { planAnnotations } from './report/annotations.js'
@@ -13,13 +15,23 @@ const MAX_REPORT_OUTPUT = 50_000
 
 async function runAction(): Promise<void> {
   const inputs = readInputs((name) => core.getInput(name))
-  if (inputs.removedMode) core.warning(removedModeNotice(inputs.removedMode))
 
   const result: LintResult = lint({
     cwd: process.cwd(),
     configPath: inputs.configPath,
     configExplicit: inputs.configExplicit,
+    mode: inputs.mode,
     threshold: inputs.threshold,
+    baseRef: detectBaseRef({
+      pullRequestBase: github.context.payload.pull_request?.base?.ref,
+      environment: process.env.GITHUB_BASE_REF,
+      pushBefore:
+        typeof github.context.payload.before === 'string'
+          ? github.context.payload.before
+          : undefined,
+    }),
+    allowFetch: true,
+    onNotice: (message) => core.info(message),
   })
 
   if (result.parseErrors.length > 0) {
@@ -38,7 +50,7 @@ async function runAction(): Promise<void> {
 
   const report = result.report
   if (inputs.annotations) {
-    const dropped = emitAnnotations(report.errors.concat(report.warnings))
+    const dropped = emitAnnotations([...report.blocking, ...report.nonBlocking])
     if (dropped > 0) report.annotationsDropped = dropped
   }
 
@@ -56,7 +68,7 @@ async function runAction(): Promise<void> {
     return
   }
 
-  const summary = failureSummary(report.errors.length, report.shortfalls.length, inputs)
+  const summary = failureSummary(report.blocking.length, report.shortfalls.length, inputs)
   if (inputs.fail) core.setFailed(summary)
   else core.warning(`${summary} (fail: false, not blocking)`)
 }
@@ -88,15 +100,23 @@ function setOutputs(report: LintResult['report'], body: string): void {
       ),
     ),
   )
-  core.setOutput('issue-count', String(report.errors.length))
-  core.setOutput('warning-count', String(report.warnings.length))
+  core.setOutput('issue-count', String(report.blocking.length))
+  core.setOutput('warning-count', String(report.nonBlocking.length))
+  core.setOutput('pre-existing-count', String(report.preExisting.length))
   core.setOutput('files-scanned', String(report.filesScanned))
   core.setOutput('report', truncate(body, MAX_REPORT_OUTPUT))
 }
 
 function failureSummary(errors: number, shortfalls: number, inputs: ActionInputs): string {
   const parts: string[] = []
-  if (errors > 0) parts.push(`${errors} localization ${errors === 1 ? 'issue' : 'issues'} found`)
+  if (errors > 0) {
+    const noun = errors === 1 ? 'issue' : 'issues'
+    parts.push(
+      inputs.mode === 'ratchet'
+        ? `${errors} new localization ${noun} introduced by this change`
+        : `${errors} localization ${noun} found`,
+    )
+  }
   if (shortfalls > 0) {
     parts.push(
       `${shortfalls} ${shortfalls === 1 ? 'language is' : 'languages are'} below the ${inputs.threshold}% threshold`,
@@ -131,7 +151,9 @@ async function main(): Promise<void> {
   try {
     await runAction()
   } catch (error) {
-    if (error instanceof ConfigError) return misconfigured(error.message)
+    if (error instanceof ConfigError || error instanceof BaseRefError) {
+      return misconfigured(error.message)
+    }
     if (error instanceof CatalogParseError) {
       return misconfigured(`${error.file}: ${error.message}`)
     }

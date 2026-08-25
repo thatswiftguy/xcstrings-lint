@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { ConfigError } from '../src/core/config.js'
-import { exitCodeFor, lint } from '../src/lint.js'
+import { BaseRefError, exitCodeFor, lint } from '../src/lint.js'
 import { fixturePath } from './helpers.js'
 
 /**
@@ -184,8 +185,8 @@ describe('the verdict', () => {
       },
       (dir) => {
         const result = run(dir)
-        expect(result.report.warnings.map((i) => i.class)).toEqual(['needsReview'])
-        expect(result.report.errors).toEqual([])
+        expect(result.report.nonBlocking.map((i) => i.class)).toEqual(['needsReview'])
+        expect(result.report.blocking).toEqual([])
         expect(result.report.passed).toBe(true)
         expect(exitCodeFor(result)).toBe(0)
       },
@@ -214,9 +215,9 @@ describe('the verdict', () => {
 
   it('splits issues into the blocking ones and the rest', () => {
     const { report } = run(BROKEN)
-    expect(report.errors.every((i) => i.severity === 'error')).toBe(true)
-    expect(report.warnings.every((i) => i.severity === 'warn')).toBe(true)
-    expect(report.errors.length + report.warnings.length).toBe(report.issues.length)
+    expect(report.blocking.every((i) => i.severity === 'error')).toBe(true)
+    expect(report.nonBlocking.every((i) => i.severity === 'warn')).toBe(true)
+    expect(report.blocking.length + report.nonBlocking.length).toBe(report.issues.length)
   })
 })
 
@@ -315,6 +316,136 @@ describe('configuration is applied', () => {
           configExplicit: true,
         })
         expect(result.report.shortfalls.map((s) => s.language)).toEqual(['xx'])
+      },
+    )
+  })
+})
+
+describe('comparing against a base branch', () => {
+  /** A throwaway git repo with one commit on `main` and one on a branch. */
+  function repo(base: Record<string, string>, head: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'xcstrings-lint-git-'))
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: dir, stdio: ['ignore', 'ignore', 'ignore'] })
+
+    const write = (files: Record<string, string>) => {
+      for (const [path, content] of Object.entries(files)) {
+        const full = join(dir, path)
+        mkdirSync(join(full, '..'), { recursive: true })
+        writeFileSync(full, content)
+      }
+    }
+
+    git('init', '--initial-branch=main')
+    git('config', 'user.email', 'test@example.com')
+    git('config', 'user.name', 'test')
+    write(base)
+    git('add', '-A')
+    git('commit', '-m', 'base')
+    git('checkout', '-b', 'feature')
+    write(head)
+    git('add', '-A')
+    // --allow-empty: a branch that changes no catalog is a case worth testing.
+    git('commit', '--allow-empty', '-m', 'head')
+    return dir
+  }
+
+  const withRepo = (
+    base: Record<string, string>,
+    head: Record<string, string>,
+    body: (dir: string) => void,
+  ) => {
+    const dir = repo(base, head)
+    try {
+      body(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const before = catalog({
+    done: { localizations: { en: unit('translated', 'D'), de: unit('translated', 'De') } },
+    old_gap: { localizations: { en: unit('translated', 'A') } },
+  })
+  const after = catalog({
+    done: { localizations: { en: unit('translated', 'D'), de: unit('translated', 'De') } },
+    old_gap: { localizations: { en: unit('translated', 'A') } },
+    fresh_gap: { localizations: { en: unit('translated', 'C') } },
+  })
+
+  it('marks which issues the branch introduced', () => {
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': after }, (dir) => {
+      const { report } = run(dir, { baseRef: 'main' })
+      expect(report.comparedToBase).toBe(true)
+      expect(report.newIssues.map((i) => i.key)).toEqual(['fresh_gap'])
+      expect(report.issues.map((i) => i.key).sort()).toEqual(['fresh_gap', 'old_gap'])
+    })
+  })
+
+  it('blocks on the backlog in full mode and only on the new one in ratchet mode', () => {
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': after }, (dir) => {
+      const full = run(dir, { baseRef: 'main', mode: 'full' })
+      expect(full.report.blocking.map((i) => i.key).sort()).toEqual(['fresh_gap', 'old_gap'])
+      expect(exitCodeFor(full)).toBe(1)
+
+      const ratchet = run(dir, { baseRef: 'main', mode: 'ratchet' })
+      expect(ratchet.report.blocking.map((i) => i.key)).toEqual(['fresh_gap'])
+      expect(ratchet.report.preExisting.map((i) => i.key)).toEqual(['old_gap'])
+      expect(exitCodeFor(ratchet)).toBe(1)
+    })
+  })
+
+  it('passes in ratchet mode when the branch adds nothing new', () => {
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': before }, (dir) => {
+      const result = run(dir, { baseRef: 'main', mode: 'ratchet' })
+      expect(result.report.blocking).toEqual([])
+      expect(result.report.passed).toBe(true)
+      // The backlog is still reported; it is just not this branch's verdict.
+      expect(result.report.preExisting.map((i) => i.key)).toEqual(['old_gap'])
+      expect(exitCodeFor(result)).toBe(0)
+    })
+  })
+
+  it('credits what the branch fixed', () => {
+    const fixed = catalog({
+      done: { localizations: { en: unit('translated', 'D'), de: unit('translated', 'De') } },
+      old_gap: { localizations: { en: unit('translated', 'A'), de: unit('translated', 'Ah') } },
+    })
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': fixed }, (dir) => {
+      const { report } = run(dir, { baseRef: 'main', mode: 'ratchet' })
+      expect(report.fixed.map((i) => i.key)).toEqual(['old_gap'])
+      expect(report.passed).toBe(true)
+    })
+  })
+
+  it('degrades to no comparison in full mode when the base cannot be resolved', () => {
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': after }, (dir) => {
+      const notices: string[] = []
+      const { report } = run(dir, { baseRef: 'no-such-branch', onNotice: (m) => notices.push(m) })
+      // Still a complete check; it just cannot say which problems are new.
+      expect(report.comparedToBase).toBe(false)
+      expect(report.blocking.map((i) => i.key).sort()).toEqual(['fresh_gap', 'old_gap'])
+      expect(notices.join(' ')).toMatch(/could not resolve the base branch/)
+    })
+  })
+
+  it('is fatal in ratchet mode when there is no base to ratchet against', () => {
+    withRepo({ 'App/L.xcstrings': before }, { 'App/L.xcstrings': after }, (dir) => {
+      expect(() => run(dir, { mode: 'ratchet' })).toThrowError(BaseRefError)
+      expect(() => run(dir, { mode: 'ratchet', baseRef: 'no-such-branch' })).toThrowError(
+        BaseRefError,
+      )
+    })
+  })
+
+  it('treats an unparseable base as fatal, not as a wall of new issues', () => {
+    withRepo(
+      { 'App/L.xcstrings': '{ not json' },
+      { 'App/L.xcstrings': after },
+      (dir) => {
+        const result = run(dir, { baseRef: 'main', mode: 'ratchet' })
+        expect(result.parseErrors).toHaveLength(1)
+        expect(exitCodeFor(result)).toBe(2)
       },
     )
   })
