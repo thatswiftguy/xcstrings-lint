@@ -1,11 +1,10 @@
-import { ALL_ISSUE_CLASSES, type Issue, type IssueClass } from '../core/types.js'
 import type { CatalogParseError } from '../core/types.js'
 import {
   code,
   pluralise,
   renderCoverageTable,
-  renderIssueDetail,
-  table,
+  renderKeySections,
+  renderLanguageTable,
   type ReportInput,
 } from './model.js'
 
@@ -21,63 +20,38 @@ import {
 const MAX_SUMMARY_LENGTH = 900_000
 const MAX_DETAIL_ROWS = 200
 
-const CLASS_LABELS: Record<IssueClass, string> = {
-  missing: 'Missing',
-  empty: 'Empty',
-  new: 'Untranslated (new)',
-  needsReview: 'Needs review',
-  stale: 'Stale key',
-  formatSpecifier: 'Format specifier mismatch',
-  pluralCoverage: 'Incomplete plural coverage',
-}
-
 export function renderSummary(input: ReportInput): string {
+  const languages = input.result.languages
   const lines: string[] = [
     `## 🌍 xcstrings-lint — ${input.passed ? 'passed' : 'failed'}`,
     '',
     ...describeRun(input),
     '',
-    '### Coverage',
-    '',
-    renderCoverageTable(input),
-    '',
   ]
 
-  const breakdown = classBreakdown(input.allIssues)
-  if (breakdown.length > 0) {
-    lines.push(
-      '### Issues found',
-      '',
-      table(
-        ['Class', 'Errors', 'Warnings'],
-        breakdown.map((row) => [row.label, String(row.errors), String(row.warnings)]),
-      ),
-      '',
-    )
-  }
-
   if (input.blocking.length > 0) {
-    // Not "blocking": this set includes warnings, which do not fail the run.
-    // The `issue-count` output counts errors only.
-    const label = input.mode === 'ratchet' ? 'New issues' : 'Issues'
-    lines.push(
-      `<details open><summary>${label} (${input.blocking.length})</summary>`,
-      '',
-      renderIssueDetail(input.blocking, MAX_DETAIL_ROWS),
-      '',
-      '</details>',
-      '',
-    )
+    const heading = input.mode === 'ratchet' ? 'New issues' : 'Issues'
+    lines.push(`### ${heading}`, '')
+    const grouped = renderLanguageTable(languages, input.blocking)
+    if (grouped) lines.push(grouped, '')
+    for (const section of renderKeySections(input.blocking, languages, MAX_DETAIL_ROWS)) {
+      lines.push(section, '')
+    }
   }
 
-  // Everything at head, gating or not. This is the list the annotation cap and
-  // the comment's own limits are allowed to truncate away from.
+  // Percentages live here and not in the PR comment: this is the surface people
+  // open when they want the standing number, rather than the one thing that
+  // changed in front of them.
+  lines.push('### Coverage', '', renderCoverageTable(input), '')
+
   const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue))
   if (carried.length > 0) {
     lines.push(
-      `<details><summary>Pre-existing issues (${carried.length})</summary>`,
+      `<details><summary>Pre-existing issues · ${carried.length}</summary>`,
       '',
-      renderIssueDetail(carried, MAX_DETAIL_ROWS),
+      renderLanguageTable(languages, carried),
+      '',
+      ...renderKeySections(carried, languages, MAX_DETAIL_ROWS),
       '',
       '</details>',
       '',
@@ -87,9 +61,9 @@ export function renderSummary(input: ReportInput): string {
   const fixed = input.comparison?.fixedIssues ?? []
   if (fixed.length > 0) {
     lines.push(
-      `<details><summary>Fixed on this branch (${fixed.length})</summary>`,
+      `<details><summary>Fixed on this branch · ${fixed.length}</summary>`,
       '',
-      renderIssueDetail(fixed, MAX_DETAIL_ROWS),
+      ...renderKeySections(fixed, languages, MAX_DETAIL_ROWS),
       '',
       '</details>',
       '',
@@ -129,23 +103,6 @@ function describeRun(input: ReportInput): string[] {
       ? `Every language is at or above ${threshold}% coverage.`
       : `${pluralise(shortfalls.length, 'language')} below the ${threshold}% threshold.`
   return [headline, '', `Checked ${catalogs} across ${languages}.`]
-}
-
-interface ClassRow {
-  label: string
-  errors: number
-  warnings: number
-}
-
-function classBreakdown(issues: Issue[]): ClassRow[] {
-  return ALL_ISSUE_CLASSES.map((issueClass) => {
-    const matching = issues.filter((issue) => issue.class === issueClass)
-    return {
-      label: CLASS_LABELS[issueClass],
-      errors: matching.filter((issue) => issue.severity === 'error').length,
-      warnings: matching.filter((issue) => issue.severity === 'warn').length,
-    }
-  }).filter((row) => row.errors > 0 || row.warnings > 0)
 }
 
 /**

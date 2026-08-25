@@ -7,7 +7,15 @@ import { belowThreshold } from '../src/core/ratchet.js'
 import { DEFAULT_MAX_PER_LEVEL, planAnnotations } from '../src/report/annotations.js'
 import { COMMENT_MARKER, isOurComment, renderComment, truncate } from '../src/report/comment.js'
 import { renderParseErrors, renderSummary } from '../src/report/summary.js'
-import { code, delta, percent } from '../src/report/model.js'
+import {
+  code,
+  delta,
+  groupLanguagesByIssues,
+  percent,
+  renderKeySections,
+  renderLanguageCell,
+  renderLanguageTable,
+} from '../src/report/model.js'
 import type { ReportInput } from '../src/report/model.js'
 import type { Issue } from '../src/core/types.js'
 
@@ -180,6 +188,156 @@ describe('annotations', () => {
   })
 })
 
+const issue = (over: Partial<Issue> = {}): Issue => ({
+  class: 'missing',
+  severity: 'error',
+  catalog: 'App/L.xcstrings',
+  key: 'k',
+  language: 'de',
+  loc: { file: 'App/L.xcstrings', line: 2 },
+  message: 'no translation',
+  ...over,
+})
+
+describe('grouping languages', () => {
+  it('puts languages with identical counts on one row', () => {
+    const issues = ['de', 'fr', 'ja'].map((language) => issue({ language }))
+    const groups = groupLanguagesByIssues(['de', 'fr', 'ja'], issues)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.languages).toEqual(['de', 'fr', 'ja'])
+    expect(groups[0]!.total).toBe(1)
+  })
+
+  it('keeps languages apart when their counts differ', () => {
+    const issues = [
+      issue({ language: 'de' }),
+      issue({ language: 'de', key: 'k2' }),
+      issue({ language: 'fr' }),
+    ]
+    const groups = groupLanguagesByIssues(['de', 'fr'], issues)
+    expect(groups.map((g) => g.languages)).toEqual([['de'], ['fr']])
+    expect(groups.map((g) => g.total)).toEqual([2, 1])
+  })
+
+  it('separates languages that differ only by issue class', () => {
+    const groups = groupLanguagesByIssues(
+      ['de', 'fr'],
+      [issue({ language: 'de', class: 'missing' }), issue({ language: 'fr', class: 'empty' })],
+    )
+    expect(groups).toHaveLength(2)
+  })
+
+  it('groups every clean language together', () => {
+    const groups = groupLanguagesByIssues(['de', 'fr', 'ja'], [issue({ language: 'de' })])
+    const clean = groups.find((g) => g.total === 0)!
+    expect(clean.languages).toEqual(['fr', 'ja'])
+  })
+
+  it('sorts the worst-affected group first', () => {
+    const groups = groupLanguagesByIssues(
+      ['de', 'fr'],
+      [issue({ language: 'fr' }), issue({ language: 'fr', key: 'k2' }), issue({ language: 'de' })],
+    )
+    expect(groups[0]!.languages).toEqual(['fr'])
+  })
+})
+
+describe('language cells', () => {
+  it('collapses a full sweep to "all N languages"', () => {
+    expect(renderLanguageCell(['de', 'fr', 'ja'], 3)).toBe('all 3 languages')
+  })
+
+  it('lists them when only some are affected', () => {
+    expect(renderLanguageCell(['de', 'fr'], 3)).toBe('`de`, `fr`')
+  })
+
+  it('truncates a very long list rather than filling the cell', () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+    expect(renderLanguageCell(many, 20)).toBe('`a`, `b`, `c`, `d`, `e`, `f`, `g`, `h` +2 more')
+  })
+
+  it('does not say "all 1 languages" for a single-language project', () => {
+    expect(renderLanguageCell(['de'], 1)).toBe('`de`')
+  })
+})
+
+describe('the summary table', () => {
+  const issues = [
+    ...['de', 'fr', 'ja'].map((language) => issue({ language, key: 'a' })),
+    issue({ language: 'de', key: 'b', class: 'empty' }),
+  ]
+  const rendered = renderLanguageTable(['de', 'fr', 'ja'], issues)
+
+  it('shows counts, never percentages', () => {
+    expect(rendered).not.toMatch(/%/)
+    expect(rendered).toContain('| Missing | Empty | Total |')
+  })
+
+  it('collapses the two identical languages onto one row', () => {
+    expect(rendered).toContain('| `fr`, `ja` | 1 | — | **1** |')
+    expect(rendered).toContain('| `de` | 1 | 1 | **2** |')
+  })
+
+  it('only has columns for classes that actually occurred', () => {
+    expect(rendered).not.toContain('Stale')
+    expect(rendered).not.toContain('Plurals')
+  })
+
+  it('renders nothing when there is nothing wrong', () => {
+    expect(renderLanguageTable(['de', 'fr'], [])).toBe('')
+  })
+})
+
+describe('key sections', () => {
+  const sections = renderKeySections(
+    [
+      issue({ language: 'de', key: 'a' }),
+      issue({ language: 'fr', key: 'a' }),
+      issue({ language: 'de', key: 'b', class: 'empty' }),
+      issue({
+        language: 'de',
+        key: 'c',
+        class: 'formatSpecifier',
+        message: 'de: expected %lld at position 1, found %@',
+      }),
+    ],
+    ['de', 'fr'],
+    40,
+  )
+
+  it('opens one collapsed block per issue class', () => {
+    expect(sections).toHaveLength(3)
+    for (const section of sections) {
+      expect(section).toMatch(/^<details><summary><b>.+<\/b> · \d+<\/summary>/)
+      expect(section).not.toContain('<details open>')
+    }
+  })
+
+  it('names the keys and the languages each is missing from', () => {
+    expect(sections[0]).toContain('<b>Missing translations</b> · 2')
+    expect(sections[0]).toContain('| `a` | all 2 languages |')
+  })
+
+  it('keeps classes apart so a crash is not buried in missing keys', () => {
+    expect(sections[1]).toContain('<b>Empty values</b> · 1')
+    expect(sections[2]).toContain('<b>Format specifier mismatches</b> · 1')
+    expect(sections[2]).toContain('expected %lld at position 1, found %@')
+  })
+
+  it('lists the widest-reaching key first', () => {
+    const wide = renderKeySections(
+      [
+        issue({ key: 'narrow', language: 'de' }),
+        issue({ key: 'wide', language: 'de' }),
+        issue({ key: 'wide', language: 'fr' }),
+      ],
+      ['de', 'fr'],
+      40,
+    )
+    expect(wide[0]!.indexOf('`wide`')).toBeLessThan(wide[0]!.indexOf('`narrow`'))
+  })
+})
+
 describe('sticky comment', () => {
   it('always carries the marker', () => {
     for (const input of [paymentScenario(), cleanScenario(), absoluteScenario()]) {
@@ -203,6 +361,18 @@ describe('sticky comment', () => {
 
   it('renders an absolute-mode report', () => {
     expect(renderComment(absoluteScenario())).toMatchSnapshot()
+  })
+
+  it('shows no percentages anywhere', () => {
+    for (const input of [paymentScenario(), absoluteScenario()]) {
+      expect(renderComment(input)).not.toMatch(/\d%/)
+    }
+  })
+
+  it('keeps the detail collapsed so the summary reads first', () => {
+    const body = renderComment(paymentScenario())
+    expect(body).not.toContain('<details open>')
+    expect(body.indexOf('| Languages |')).toBeLessThan(body.indexOf('<details>'))
   })
 
   it('keeps the marker when the body has to be truncated', () => {
