@@ -1,5 +1,6 @@
 import type { AnalysisResult } from '../core/analyze.js'
 import type { ThresholdShortfall } from '../core/coverage.js'
+import type { Mode } from '../lint.js'
 import {
   ALL_ISSUE_CLASSES,
   STATE_ISSUE_CLASSES,
@@ -9,14 +10,28 @@ import {
 
 /** Everything the three reporting surfaces need, computed once by the caller. */
 export interface ReportInput {
+  mode: Mode
   passed: boolean
   result: AnalysisResult
-  /** Every issue found, errors and warnings together. */
+  /** Every issue found at head. */
   issues: Issue[]
   /** The issues that decide pass or fail. */
-  errors: Issue[]
-  /** Reported, never blocking. */
+  blocking: Issue[]
+  /** Non-blocking, and not carried over from the base branch. */
   warnings: Issue[]
+  /**
+   * Every issue the base branch has too, blocking or not. Use `carriedIssues`
+   * for the subset a report should list separately.
+   */
+  preExisting: Issue[]
+  /** Issues this change introduced, blocking or not. Empty with no base. */
+  newIssues: Issue[]
+  /** Issues the base had and head does not. Credit, never a gate. */
+  fixed: Issue[]
+  /** True when a base branch was resolved and the split above is meaningful. */
+  comparedToBase: boolean
+  /** Revision compared against, for display. */
+  baseLabel?: string | undefined
   shortfalls: ThresholdShortfall[]
   threshold: number
   /** How many files the globs matched. */
@@ -49,6 +64,18 @@ export function pluralise(count: number, singular: string, plural = `${singular}
   return `${count} ${count === 1 ? singular : plural}`
 }
 
+/**
+ * Pre-existing issues worth listing on their own.
+ *
+ * Only the ones that are not already in the blocking list. In full mode an old
+ * problem still blocks, and printing it a second time under "not introduced by
+ * this change" would read as an excuse for something the run just failed on.
+ */
+export function carriedIssues(input: ReportInput): Issue[] {
+  const blocking = new Set(input.blocking)
+  return input.preExisting.filter((issue) => !blocking.has(issue))
+}
+
 export interface CoverageRow {
   language: string
   percent: number
@@ -59,7 +86,7 @@ export interface CoverageRow {
 
 export function coverageRows(input: ReportInput): CoverageRow[] {
   const errorsByLanguage = new Map<string, number>()
-  for (const issue of input.errors) {
+  for (const issue of input.blocking) {
     if (!issue.language) continue
     errorsByLanguage.set(issue.language, (errorsByLanguage.get(issue.language) ?? 0) + 1)
   }

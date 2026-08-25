@@ -57526,9 +57526,20 @@ function table(headers, rows) {
 function pluralise(count, singular, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
 }
+/**
+ * Pre-existing issues worth listing on their own.
+ *
+ * Only the ones that are not already in the blocking list. In full mode an old
+ * problem still blocks, and printing it a second time under "not introduced by
+ * this change" would read as an excuse for something the run just failed on.
+ */
+function carriedIssues(input) {
+    const blocking = new Set(input.blocking);
+    return input.preExisting.filter((issue) => !blocking.has(issue));
+}
 function coverageRows(input) {
     const errorsByLanguage = new Map();
-    for (const issue of input.errors) {
+    for (const issue of input.blocking) {
         if (!issue.language)
             continue;
         errorsByLanguage.set(issue.language, (errorsByLanguage.get(issue.language) ?? 0) + 1);
@@ -57732,8 +57743,8 @@ const COMMENT_MARKER = '<!-- xcstrings-lint -->';
 /** GitHub rejects comment bodies over 65536 characters. Leave headroom. */
 const MAX_COMMENT_LENGTH = 60000;
 const MAX_DETAIL_ROWS = 40;
-/** Warnings are context, not the finding -- show less of them. */
-const MAX_WARNING_ROWS = 20;
+/** Context, not the finding -- show less of it. */
+const MAX_CONTEXT_ROWS = 20;
 /**
  * Render the sticky comment.
  *
@@ -57745,47 +57756,62 @@ const MAX_WARNING_ROWS = 20;
 function renderComment(input) {
     const status = input.passed ? '**passed**' : '**failed**';
     const lines = [`### 🌍 xcstrings-lint — ${status}`, '', headline(input), ''];
-    const summary = renderLanguageTable(input.result.languages, input.errors);
+    const summary = renderLanguageTable(input.result.languages, input.blocking);
     if (summary)
         lines.push(summary, '');
-    for (const section of renderKeySections(input.errors, input.result.languages, MAX_DETAIL_ROWS)) {
+    for (const section of renderKeySections(input.blocking, input.result.languages, MAX_DETAIL_ROWS)) {
         lines.push(section, '');
     }
-    // Warnings get a section of their own rather than a bare count. They do not
-    // block the merge, so they stay collapsed and out of the headline -- but a
-    // reviewer who wants to know what else is off should not have to go digging
-    // through the job summary to find out.
-    if (input.warnings.length > 0) {
-        const body = [
-            renderLanguageTable(input.result.languages, input.warnings),
-            ...renderKeySections(input.warnings, input.result.languages, MAX_WARNING_ROWS, {
-                collapsed: false,
-            }),
-        ].filter(Boolean);
-        lines.push(`<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`, '', body.join('\n\n'), '', '</details>', '');
+    // Everything that does not block gets a section of its own rather than a bare
+    // count, and pre-existing problems are kept apart from warnings. A reviewer
+    // who wants to know what else is off should not have to guess which of these
+    // two very different things they are looking at.
+    lines.push(...collapsedSection(input, carriedIssues(input), 'Pre-existing issues', 'not introduced by this change'), ...collapsedSection(input, input.warnings, 'Warnings', 'not blocking'));
+    if (input.fixed.length > 0) {
+        lines.push(`✅ ${pluralise(input.fixed.length, 'issue')} fixed by this change.`, '');
     }
     lines.push(footer(input));
     return truncate(lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd());
 }
+function collapsedSection(input, issues, label, note) {
+    if (issues.length === 0)
+        return [];
+    const body = [
+        renderLanguageTable(input.result.languages, issues),
+        ...renderKeySections(issues, input.result.languages, MAX_CONTEXT_ROWS, { collapsed: false }),
+    ].filter(Boolean);
+    return [
+        `<details><summary><b>${label}</b> · ${issues.length} — ${note}</summary>`,
+        '',
+        body.join('\n\n'),
+        '',
+        '</details>',
+        '',
+    ];
+}
 function headline(input) {
-    const shortfalls = input.shortfalls;
-    if (input.errors.length === 0 && shortfalls.length === 0) {
+    const base = input.baseLabel ? code(input.baseLabel) : 'the base branch';
+    if (input.blocking.length === 0) {
+        if (input.shortfalls.length > 0) {
+            return (`**${pluralise(input.shortfalls.length, 'language')}** below the ${input.threshold}% threshold: ` +
+                input.shortfalls.map((s) => `\`${s.language}\` at ${s.percent}%`).join(', ') +
+                '.');
+        }
+        if (input.mode === 'ratchet')
+            return `No new localization issues vs ${base}.`;
         return `Every language is fully translated across ${pluralise(input.filesScanned, 'file')}.`;
     }
-    if (input.errors.length === 0) {
-        return (`**${pluralise(shortfalls.length, 'language')}** below the ${input.threshold}% threshold: ` +
-            shortfalls.map((s) => `\`${s.language}\` at ${s.percent}%`).join(', ') +
-            '.');
-    }
-    const keys = new Set(input.errors.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size;
-    const languages = new Set(input.errors.map((issue) => issue.language).filter(Boolean)).size;
-    return (`**${pluralise(input.errors.length, 'issue')}** — ` +
+    const keys = new Set(input.blocking.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size;
+    const languages = new Set(input.blocking.map((issue) => issue.language).filter(Boolean)).size;
+    const noun = input.mode === 'ratchet' ? 'new issue' : 'issue';
+    const against = input.mode === 'ratchet' ? ` vs ${base}` : '';
+    return (`**${pluralise(input.blocking.length, noun)}**${against} — ` +
         `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
 }
 function footer(input) {
     const parts = [`${pluralise(input.filesScanned, 'file')} checked`];
-    if (input.warnings.length > 0)
-        parts.push(`${pluralise(input.warnings.length, 'warning')}`);
+    if (input.mode === 'ratchet')
+        parts.push('gate: new issues only');
     if (input.annotationsDropped) {
         parts.push(`${input.annotationsDropped} annotations not shown inline — see the job summary`);
     }
@@ -57869,8 +57895,8 @@ const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import
 // EXTERNAL MODULE: ./node_modules/yaml/dist/index.js
 var dist = __nccwpck_require__(8815);
 // EXTERNAL MODULE: ./node_modules/picomatch/index.js
-var node_modules_picomatch = __nccwpck_require__(4006);
-var picomatch_default = /*#__PURE__*/__nccwpck_require__.n(node_modules_picomatch);
+var picomatch = __nccwpck_require__(4006);
+var picomatch_default = /*#__PURE__*/__nccwpck_require__.n(picomatch);
 ;// CONCATENATED MODULE: ./node_modules/zod/v3/helpers/util.js
 var util;
 (function (util) {
@@ -62277,7 +62303,7 @@ function createIgnoreMatchers(config) {
     };
 }
 function createPathMatcher(config) {
-    const include = picomatch(config.paths, { dot: true });
+    const include = picomatch_default()(config.paths, { dot: true });
     const { ignoresFile } = createIgnoreMatchers(config);
     return (path) => include(path) && !ignoresFile(path);
 }
@@ -62293,17 +62319,28 @@ function createPathMatcher(config) {
  */
 function readInputs(get) {
     const configPath = (get('config') || '').trim() || DEFAULT_CONFIG_PATH;
-    const mode = (get('mode') || '').trim();
     return {
         configPath,
         // The default path is allowed to be absent -- zero-config is supported.
         configExplicit: configPath !== DEFAULT_CONFIG_PATH,
+        mode: readMode(get),
         threshold: readThreshold(get),
         comment: readBoolean(get, 'comment', true),
         annotations: readBoolean(get, 'annotations', true),
         fail: readBoolean(get, 'fail', true),
-        ...(mode === '' ? {} : { removedMode: mode }),
     };
+}
+function readMode(get) {
+    const value = (get('mode') || '').trim();
+    if (value === '')
+        return 'full';
+    if (value === 'full' || value === 'ratchet')
+        return value;
+    // `absolute` was the old name for what `full` does now. Accepting it costs a
+    // line and saves anyone with it in their workflow a broken run.
+    if (value === 'absolute')
+        return 'full';
+    throw new ConfigError(`mode must be "full" or "ratchet", got "${value}"`);
 }
 /**
  * Read a boolean input, falling back rather than throwing when it is absent.
@@ -62330,15 +62367,145 @@ function readThreshold(get) {
     }
     return value;
 }
-/** Told to the user once when a v1 workflow still sets `mode`. */
-function removedModeNotice(mode) {
-    return (`The "mode" input was removed in v2 and "${mode}" is being ignored. ` +
-        'Every run now checks the whole repository; there is no base-branch comparison. ' +
-        'Delete the line from your workflow.');
+/**
+ * Work out what to compare against.
+ *
+ * Pull requests give a base branch. Pushes do not, but `payload.before` is the
+ * commit the branch was at, which is the right comparison for a push -- so
+ * `on: push` gets the new-versus-pre-existing split too, without anyone having
+ * to configure it. Undefined simply means no split; only ratchet mode treats
+ * that as fatal.
+ */
+function detectBaseRef(source) {
+    if (source.pullRequestBase)
+        return source.pullRequestBase;
+    if (source.environment)
+        return source.environment;
+    // All-zeros means the branch did not exist before this push.
+    const before = source.pushBefore;
+    if (before && !/^0+$/.test(before))
+        return before;
+    return undefined;
 }
 
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+// EXTERNAL MODULE: ./node_modules/fast-glob/out/index.js
+var out = __nccwpck_require__(5648);
+var out_default = /*#__PURE__*/__nccwpck_require__.n(out);
+;// CONCATENATED MODULE: ./src/core/revision.ts
+
+
+
+
+function workingTreeFiles(cwd, config) {
+    return {
+        label: 'the working tree',
+        list: () => out_default().sync(config.paths, {
+            cwd,
+            dot: true,
+            onlyFiles: true,
+            followSymbolicLinks: false,
+            ignore: config.ignoreFiles,
+        }),
+        read: (path) => {
+            try {
+                return (0,external_node_fs_namespaceObject.readFileSync)((0,external_node_path_namespaceObject.join)(cwd, path));
+            }
+            catch {
+                return undefined;
+            }
+        },
+    };
+}
+function gitRevisionFiles(revision, cwd) {
+    return {
+        label: revision,
+        list: () => {
+            const out = (0,external_node_child_process_namespaceObject.execFileSync)('git', ['ls-tree', '-r', '--name-only', '-z', revision], {
+                cwd,
+                encoding: 'utf8',
+                maxBuffer: 256 * 1024 * 1024,
+            });
+            return out.split('\0').filter((line) => line.length > 0);
+        },
+        read: (path) => {
+            try {
+                return (0,external_node_child_process_namespaceObject.execFileSync)('git', ['show', `${revision}:${path}`], {
+                    cwd,
+                    maxBuffer: 128 * 1024 * 1024,
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                });
+            }
+            catch {
+                // Absent at this revision -- a file this change added.
+                return undefined;
+            }
+        },
+    };
+}
+/** The base branch could not be resolved. Only fatal in `mode: ratchet`. */
+class BaseRefError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'BaseRefError';
+    }
+}
+const FETCH_DEPTH_HINT = [
+    'Comparing against the base branch needs it in this clone.',
+    'Add fetch-depth: 0 to your checkout step:',
+    '',
+    '    - uses: actions/checkout@v5',
+    '      with:',
+    '        fetch-depth: 0',
+].join('\n');
+function git(args, cwd) {
+    try {
+        return (0,external_node_child_process_namespaceObject.execFileSync)('git', args, {
+            cwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
+ * Resolve the revision to compare against.
+ *
+ * Prefers the merge base over the base tip: comparing against the tip
+ * attributes everything that landed on the base branch since you branched to
+ * your change, in both directions, which is exactly the unfair complaint this
+ * comparison exists to avoid.
+ */
+function resolveBaseRevision(options) {
+    const { cwd, baseRef, allowFetch = false, onNotice } = options;
+    if (!baseRef)
+        return { problem: 'no base branch to compare against' };
+    const candidates = [`origin/${baseRef}`, baseRef, `refs/remotes/origin/${baseRef}`];
+    const verify = (ref) => git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd) !== undefined;
+    let resolved = candidates.find(verify);
+    if (!resolved && allowFetch) {
+        onNotice?.(`base ref "${baseRef}" is not in this clone; fetching it`);
+        git(['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`], cwd);
+        resolved = candidates.find(verify);
+    }
+    if (!resolved) {
+        return { problem: `could not resolve the base branch "${baseRef}".\n\n${FETCH_DEPTH_HINT}` };
+    }
+    const mergeBase = git(['merge-base', resolved, 'HEAD'], cwd);
+    if (mergeBase)
+        return { revision: mergeBase };
+    // Shallow clones often have the branch tip but not enough history to find a
+    // merge base. Comparing against the tip is still far better than nothing.
+    onNotice?.(`no merge base between ${resolved} and HEAD (likely a shallow clone); ` +
+        `comparing against ${resolved} directly. Set fetch-depth: 0 for an exact comparison.`);
+    return { revision: resolved };
+}
+
 ;// CONCATENATED MODULE: ./src/core/parse/format-specifiers.ts
 /**
  * Format-specifier parsing and comparison.
@@ -63416,7 +63583,7 @@ function analyze(catalogs, config, options = {}) {
     for (const catalog of inScope)
         for (const language of catalog.languages)
             discovered.add(language);
-    const candidates = (config.required ?? [...discovered]).slice().sort();
+    const candidates = (config.required ?? options.languages ?? [...discovered]).slice().sort();
     const rules = (options.rules ?? ALL_RULES).filter((rule) => rule.classes.some((issueClass) => config.severity[issueClass] !== 'off'));
     const issues = [];
     const assessments = [];
@@ -63463,9 +63630,77 @@ function sortIssues(issues) {
         a.class.localeCompare(b.class));
 }
 
-// EXTERNAL MODULE: ./node_modules/fast-glob/out/index.js
-var out = __nccwpck_require__(5648);
-var out_default = /*#__PURE__*/__nccwpck_require__.n(out);
+;// CONCATENATED MODULE: ./src/core/compare.ts
+/**
+ * Telling a developer which problems are theirs.
+ *
+ * The check always reads the whole repository -- the comparison never narrows
+ * what gets looked at. All it does is answer the question a reviewer actually
+ * asks in front of a long list: *did I do this?* Twenty-eight pre-existing gaps
+ * and one new one is a very different conversation from twenty-nine gaps, and
+ * without the split the new one is invisible.
+ *
+ * The comparison is semantic, never textual. Xcode rewrites large regions of
+ * `.xcstrings` JSON on every build, so a text diff of these files is almost
+ * pure noise; both sides are parsed into issue sets and the sets are compared.
+ */
+/**
+ * Identity of an issue for comparison purposes.
+ *
+ * The five state classes share one identity per (catalog, key, language),
+ * because they are mutually exclusive states of the same pair -- a translation
+ * that goes from `new` to `empty` is still the same untranslated string and
+ * must not register as a fresh regression. Every other class gets its own
+ * identity, because a format-specifier break in an already-`needs_review`
+ * string is genuinely a new problem.
+ */
+function issueIdentity(issue) {
+    const group = issue.class === 'missing' ||
+        issue.class === 'empty' ||
+        issue.class === 'new' ||
+        issue.class === 'needsReview' ||
+        issue.class === 'stale'
+        ? 'state'
+        : issue.class;
+    // JSON-encoded so no separator can collide with a path, key or language.
+    return JSON.stringify([issue.catalog, issue.key, issue.language ?? null, group]);
+}
+function compareIssues(head, base, options) {
+    const baseIdentities = new Set(base.issues.map(issueIdentity));
+    const headIdentities = new Set(head.issues.map(issueIdentity));
+    const newIssues = [];
+    const preExisting = [];
+    for (const issue of head.issues) {
+        if (baseIdentities.has(issueIdentity(issue)))
+            preExisting.push(issue);
+        else
+            newIssues.push(issue);
+    }
+    return {
+        baseLabel: options.baseLabel,
+        newIssues,
+        preExisting,
+        fixed: base.issues.filter((issue) => !headIdentities.has(issueIdentity(issue))),
+        baseErrors: options.baseErrors ?? [],
+    };
+}
+/**
+ * The union of every language either side knows about.
+ *
+ * Both sides have to be assessed against the same set, or adding a language
+ * makes every one of its keys look like a fresh regression and removing one
+ * makes the whole locale look fixed.
+ */
+function unifiedLanguages(...groups) {
+    const languages = new Set();
+    for (const group of groups) {
+        for (const catalog of group)
+            for (const language of catalog.languages)
+                languages.add(language);
+    }
+    return [...languages].sort();
+}
+
 // EXTERNAL MODULE: ./node_modules/jsonc-parser/lib/umd/main.js
 var main = __nccwpck_require__(9547);
 ;// CONCATENATED MODULE: ./src/core/parse/line-index.ts
@@ -64189,36 +64424,24 @@ function assembleLegacyCatalogs(files, options = {}) {
 
 
 
-
 /**
- * Find and parse every catalog in the working tree.
+ * Find and parse every catalog at one revision.
  *
- * The whole repository, every time. There is no base-branch comparison and no
- * incremental mode: a translation that is missing is missing whether or not
- * this particular change is what dropped it, and a check that only looks at the
- * diff will never tell you the thing you actually want to know.
+ * The whole tree, every time. What the base branch is used for is telling a
+ * developer which of these problems they introduced -- never for deciding which
+ * files to look at, because a translation that is missing is missing whether or
+ * not this change is what dropped it.
  */
-function scan(cwd, config) {
-    const matched = out_default().sync(config.paths, {
-        cwd,
-        dot: true,
-        onlyFiles: true,
-        followSymbolicLinks: false,
-        ignore: config.ignoreFiles,
-    })
-        .sort();
+function scan(source, config) {
+    const matches = createPathMatcher(config);
+    const matched = source.list().filter(matches).sort();
     const catalogs = [];
     const errors = [];
     const legacy = [];
     for (const path of matched) {
-        let buffer;
-        try {
-            buffer = (0,external_node_fs_namespaceObject.readFileSync)((0,external_node_path_namespaceObject.join)(cwd, path));
-        }
-        catch (error) {
-            errors.push(new CatalogParseError(path, `could not read: ${error.message}`));
+        const buffer = source.read(path);
+        if (!buffer)
             continue;
-        }
         try {
             if (path.endsWith('.xcstrings')) {
                 catalogs.push(parseXcstrings(path, decodeTextFile(buffer)));
@@ -64246,8 +64469,14 @@ function scan(cwd, config) {
         matched,
     };
 }
+/** Scan the checkout on disk. */
+function scanWorkingTree(cwd, config) {
+    return scan(workingTreeFiles(cwd, config), config);
+}
 
 ;// CONCATENATED MODULE: ./src/lint.ts
+
+
 
 
 
@@ -64267,26 +64496,70 @@ function lint(options) {
         ? options.configPath
         : (0,external_node_path_namespaceObject.join)(options.cwd, options.configPath);
     const config = options.config ?? loadConfig(configPath, options.configExplicit ?? false);
+    const mode = options.mode ?? 'full';
     const threshold = options.threshold ?? 100;
-    const scanned = scan(options.cwd, config);
+    const head = scanWorkingTree(options.cwd, config);
     // Finding nothing is a configuration error, not a pass. A linter that reports
     // "every language is fully translated" because its globs match no files is
     // worse than one that is switched off, because it looks like it is working.
-    if (scanned.matched.length === 0) {
+    if (head.matched.length === 0) {
         throw new ConfigError(`no catalog files matched. Searched for:\n` +
             config.paths.map((pattern) => `  - ${pattern}`).join('\n') +
             `\n\nCheck the "paths" option${config.source ? ` in ${config.source}` : ''}, or that the ` +
             'checkout ran before this step.');
     }
+    const baseline = resolveBaseline(options, config, mode);
+    const languages = unifiedLanguages(head.catalogs, baseline?.scan.catalogs ?? []);
+    const result = analyze(head.catalogs, config, { languages });
+    const comparison = baseline
+        ? compareIssues(result, analyze(baseline.scan.catalogs, config, { languages }), {
+            baseLabel: baseline.label,
+            baseErrors: baseline.scan.errors,
+        })
+        : undefined;
     return {
         config,
-        parseErrors: scanned.errors,
-        report: buildReport(analyze(scanned.catalogs, config), {
+        // A base we could not parse makes every head issue look new, so it is just
+        // as fatal as one on our own side.
+        parseErrors: [...head.errors, ...(comparison?.baseErrors ?? [])],
+        report: buildReport(result, {
             config,
+            mode,
             threshold,
-            filesScanned: scanned.matched.length,
+            filesScanned: head.matched.length,
+            ...(comparison ? { comparison } : {}),
         }),
     };
+}
+/**
+ * Load the base revision, if there is one to load.
+ *
+ * In ratchet mode a missing base is fatal: without it there is nothing to
+ * ratchet against and passing everything would be a lie. In full mode it is
+ * only a notice -- the check still works, it just cannot say which problems are
+ * new, so a local run or a `schedule` event degrades instead of failing.
+ */
+function resolveBaseline(options, config, mode) {
+    if (!options.baseRef) {
+        if (mode === 'ratchet') {
+            throw new BaseRefError('Ratchet mode needs a base branch to compare against, and none was supplied.\n\n' +
+                'Run this on `pull_request`, or use the default `mode: full`.');
+        }
+        return undefined;
+    }
+    const { revision, problem } = resolveBaseRevision({
+        cwd: options.cwd,
+        baseRef: options.baseRef,
+        allowFetch: options.allowFetch ?? false,
+        ...(options.onNotice ? { onNotice: options.onNotice } : {}),
+    });
+    if (!revision) {
+        if (mode === 'ratchet')
+            throw new BaseRefError(`Ratchet mode ${problem}`);
+        options.onNotice?.(`${problem} -- reporting every issue without marking which are new`);
+        return undefined;
+    }
+    return { label: revision, scan: scan(gitRevisionFiles(revision, options.cwd), config) };
 }
 /**
  * Turn an analysis into the shape all three report surfaces read.
@@ -64296,20 +64569,41 @@ function lint(options) {
  * comment, the summary and the exit code cannot disagree about it.
  */
 function buildReport(result, options) {
-    const shortfalls = belowThreshold(result.coverage, options.threshold, {
-        required: options.config.required,
-        sourceLanguages: result.sourceLanguages,
-    });
-    const errors = result.issues.filter((issue) => issue.severity === 'error');
-    const warnings = result.issues.filter((issue) => issue.severity === 'warn');
+    const { comparison, mode } = options;
+    // Ratchet mode does not apply the coverage threshold. Adding ten translated
+    // strings and one untranslated one moves the percentage *up* while shipping
+    // an untranslated string, so a percentage is the wrong gate for "what did
+    // this change do" -- the set difference is the whole point.
+    const shortfalls = mode === 'ratchet'
+        ? []
+        : belowThreshold(result.coverage, options.threshold, {
+            required: options.config.required,
+            sourceLanguages: result.sourceLanguages,
+        });
+    const gated = mode === 'ratchet' && comparison ? comparison.newIssues : result.issues;
+    const blocking = gated.filter((issue) => issue.severity === 'error');
+    const blockingSet = new Set(blocking);
+    const nonBlocking = result.issues.filter((issue) => !blockingSet.has(issue));
+    const preExistingSet = new Set(comparison?.preExisting ?? []);
     return {
+        mode,
         // Coverage at threshold is not the whole story: a format-specifier mismatch
         // crashes at runtime while coverage still reads 100%.
-        passed: shortfalls.length === 0 && errors.length === 0,
+        passed: shortfalls.length === 0 && blocking.length === 0,
         result,
         issues: result.issues,
-        errors,
-        warnings,
+        blocking,
+        // Split so the report never files a pre-existing problem under "warnings".
+        warnings: nonBlocking.filter((issue) => !preExistingSet.has(issue)),
+        // The honest set: everything the base branch had too, blocking or not. What
+        // the report *shows* under "pre-existing" is the non-blocking part of it --
+        // see `carriedIssues` -- but the count has to be the truth, because in full
+        // mode every one of these blocks and reporting zero would be a lie.
+        preExisting: comparison?.preExisting ?? [],
+        newIssues: comparison?.newIssues ?? [],
+        fixed: comparison?.fixed ?? [],
+        ...(comparison ? { baseLabel: comparison.baseLabel } : {}),
+        comparedToBase: comparison !== undefined,
         shortfalls,
         threshold: options.threshold,
         filesScanned: options.filesScanned,
@@ -64321,6 +64615,7 @@ function exitCodeFor(result) {
         return 2;
     return result.report.passed ? 0 : 1;
 }
+
 
 ;// CONCATENATED MODULE: ./src/report/annotations.ts
 /**
@@ -64398,12 +64693,12 @@ function renderSummary(input) {
         ...describeRun(input),
         '',
     ];
-    if (input.errors.length > 0) {
-        lines.push('### Issues', '');
-        const grouped = renderLanguageTable(languages, input.errors);
+    if (input.blocking.length > 0) {
+        lines.push(`### ${input.mode === 'ratchet' ? 'New issues' : 'Issues'}`, '');
+        const grouped = renderLanguageTable(languages, input.blocking);
         if (grouped)
             lines.push(grouped, '');
-        for (const section of renderKeySections(input.errors, languages, summary_MAX_DETAIL_ROWS)) {
+        for (const section of renderKeySections(input.blocking, languages, summary_MAX_DETAIL_ROWS)) {
             lines.push(section, '');
         }
     }
@@ -64411,9 +64706,8 @@ function renderSummary(input) {
     // open when they want the standing number, rather than the one thing that
     // changed in front of them.
     lines.push('### Coverage', '', renderCoverageTable(input), '');
-    if (input.warnings.length > 0) {
-        lines.push(`<details><summary>Warnings · ${input.warnings.length}</summary>`, '', renderLanguageTable(languages, input.warnings), '', ...renderKeySections(input.warnings, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
-    }
+    const carried = carriedIssues(input);
+    lines.push(...section(input, carried, `Pre-existing issues · ${carried.length}`), ...section(input, input.warnings, `Warnings · ${input.warnings.length}`), ...section(input, input.fixed, `Fixed by this change · ${input.fixed.length}`));
     if (input.annotationsDropped) {
         lines.push(`_${input.annotationsDropped} annotations were not shown inline; GitHub caps them per step._`, '');
     }
@@ -64422,22 +64716,40 @@ function renderSummary(input) {
         ? `${body.slice(0, MAX_SUMMARY_LENGTH)}\n\n_Summary truncated._`
         : body;
 }
+function section(input, issues, title) {
+    if (issues.length === 0)
+        return [];
+    return [
+        `<details><summary>${title}</summary>`,
+        '',
+        renderLanguageTable(input.result.languages, issues),
+        '',
+        ...renderKeySections(issues, input.result.languages, summary_MAX_DETAIL_ROWS, { collapsed: false }),
+        '',
+        '</details>',
+        '',
+    ];
+}
 function describeRun(input) {
     const scope = `Checked ${pluralise(input.filesScanned, 'file')} — ` +
         `${pluralise(input.result.catalogs.length, 'catalog')} across ` +
         `${pluralise(input.result.languages.length, 'language')}.`;
-    const shortfalls = input.shortfalls;
-    const headline = input.errors.length === 0 && shortfalls.length === 0
-        ? `Every language is at or above ${input.threshold}% coverage.`
+    const attribution = input.comparedToBase
+        ? `${pluralise(input.newIssues.length, 'issue')} new vs ${input.baseLabel ? code(input.baseLabel) : 'the base branch'}, ${input.preExisting.length} pre-existing.`
+        : '';
+    const headline = input.blocking.length === 0 && input.shortfalls.length === 0
+        ? input.mode === 'ratchet'
+            ? 'No new localization issues.'
+            : `Every language is at or above ${input.threshold}% coverage.`
         : [
-            input.errors.length > 0 ? pluralise(input.errors.length, 'blocking issue') : '',
-            shortfalls.length > 0
-                ? `${pluralise(shortfalls.length, 'language')} below the ${input.threshold}% threshold`
+            input.blocking.length > 0 ? pluralise(input.blocking.length, 'blocking issue') : '',
+            input.shortfalls.length > 0
+                ? `${pluralise(input.shortfalls.length, 'language')} below the ${input.threshold}% threshold`
                 : '',
         ]
             .filter(Boolean)
             .join(', ') + '.';
-    return [headline, '', scope];
+    return [headline, '', scope, ...(attribution ? ['', attribution] : [])];
 }
 /**
  * Parse failures get their own block. These are a different kind of problem
@@ -64466,17 +64778,27 @@ function renderParseErrors(errors) {
 
 
 
+
+
 /** Action outputs have a size limit; the full report lives in the job summary. */
 const MAX_REPORT_OUTPUT = 50_000;
 async function runAction() {
     const inputs = readInputs((name) => getInput(name));
-    if (inputs.removedMode)
-        warning(removedModeNotice(inputs.removedMode));
     const result = lint({
         cwd: process.cwd(),
         configPath: inputs.configPath,
         configExplicit: inputs.configExplicit,
+        mode: inputs.mode,
         threshold: inputs.threshold,
+        baseRef: detectBaseRef({
+            pullRequestBase: github_context.payload.pull_request?.base?.ref,
+            environment: process.env.GITHUB_BASE_REF,
+            pushBefore: typeof github_context.payload.before === 'string'
+                ? github_context.payload.before
+                : undefined,
+        }),
+        allowFetch: true,
+        onNotice: (message) => info(message),
     });
     if (result.parseErrors.length > 0) {
         for (const parseError of result.parseErrors) {
@@ -64491,7 +64813,7 @@ async function runAction() {
     }
     const report = result.report;
     if (inputs.annotations) {
-        const dropped = emitAnnotations(report.errors.concat(report.warnings));
+        const dropped = emitAnnotations([...report.blocking, ...report.warnings]);
         if (dropped > 0)
             report.annotationsDropped = dropped;
     }
@@ -64507,7 +64829,7 @@ async function runAction() {
         info(`No localization issues across ${report.filesScanned} file(s).`);
         return;
     }
-    const summary = failureSummary(report.errors.length, report.shortfalls.length, inputs);
+    const summary = failureSummary(report.blocking.length, report.shortfalls.length, inputs);
     if (inputs.fail)
         setFailed(summary);
     else
@@ -64535,15 +64857,20 @@ function emitAnnotations(issues) {
 function setOutputs(report, body) {
     setOutput('passed', String(report.passed));
     setOutput('coverage', JSON.stringify(Object.fromEntries(Object.entries(report.result.coverage).map(([language, c]) => [language, c.percent]))));
-    setOutput('issue-count', String(report.errors.length));
+    setOutput('issue-count', String(report.blocking.length));
     setOutput('warning-count', String(report.warnings.length));
+    setOutput('pre-existing-count', String(report.preExisting.length));
     setOutput('files-scanned', String(report.filesScanned));
     setOutput('report', truncate(body, MAX_REPORT_OUTPUT));
 }
 function failureSummary(errors, shortfalls, inputs) {
     const parts = [];
-    if (errors > 0)
-        parts.push(`${errors} localization ${errors === 1 ? 'issue' : 'issues'} found`);
+    if (errors > 0) {
+        const noun = errors === 1 ? 'issue' : 'issues';
+        parts.push(inputs.mode === 'ratchet'
+            ? `${errors} new localization ${noun} introduced by this change`
+            : `${errors} localization ${noun} found`);
+    }
     if (shortfalls > 0) {
         parts.push(`${shortfalls} ${shortfalls === 1 ? 'language is' : 'languages are'} below the ${inputs.threshold}% threshold`);
     }
@@ -64575,8 +64902,9 @@ async function main_main() {
         await runAction();
     }
     catch (error) {
-        if (error instanceof ConfigError)
+        if (error instanceof ConfigError || error instanceof BaseRefError) {
             return misconfigured(error.message);
+        }
         if (error instanceof CatalogParseError) {
             return misconfigured(`${error.file}: ${error.message}`);
         }

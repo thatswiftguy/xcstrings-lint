@@ -97,3 +97,31 @@ jobs:
             || { echo "::error::a scan that matched no files reported success"; exit 1; }
           test "${{ steps.check.outputs.passed }}" != "true" \
             || { echo "::error::a scan that matched no files set passed=true"; exit 1; }
+
+  ratchet-separates-new-from-pre-existing:
+    name: ratchet reports the backlog without blocking on it
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The comparison needs the base branch in the clone.
+          fetch-depth: 0
+
+      - id: check
+        uses: ./
+        with:
+          config: .github/self-check/broken.yml
+          mode: ratchet
+          comment: false
+          fail: false
+
+      - name: Assert the backlog is reported, not blamed on this PR
+        run: |
+          test "${{ steps.check.outputs.pre-existing-count }}" -gt 0 \
+            || { echo "::error::ratchet mode found no pre-existing issues in the broken fixtures"; exit 1; }
+          cat <<'REPORT' > report.md
+          ${{ steps.check.outputs.report }}
+          REPORT
+          grep -q 'Pre-existing issues' report.md \
+            || { echo "::error::the report did not separate pre-existing issues"; cat report.md; exit 1; }

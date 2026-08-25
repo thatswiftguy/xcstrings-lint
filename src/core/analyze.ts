@@ -16,6 +16,14 @@ export interface AnalysisResult {
 }
 
 export interface AnalyzeOptions {
+  /**
+   * Force the target language set instead of discovering it from the catalogs.
+   *
+   * The base-branch comparison depends on this: if each side discovers its own
+   * languages, a change that deletes the last German string makes German vanish
+   * from head's discovered set, and the regression reads as "everything fixed".
+   */
+  languages?: string[] | undefined
   /** Run a subset of the checks. Defaults to all of them; injected by tests. */
   rules?: readonly Rule[]
 }
@@ -39,7 +47,7 @@ export function analyze(
   // simply absent from one locale is exactly the gap worth surfacing.
   const discovered = new Set<LanguageCode>()
   for (const catalog of inScope) for (const language of catalog.languages) discovered.add(language)
-  const candidates = (config.required ?? [...discovered]).slice().sort()
+  const candidates = (config.required ?? options.languages ?? [...discovered]).slice().sort()
 
   const rules = (options.rules ?? ALL_RULES).filter((rule) =>
     rule.classes.some((issueClass) => config.severity[issueClass] !== 'off'),

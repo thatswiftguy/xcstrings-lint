@@ -10,6 +10,12 @@ inputs:
     description: 'Path to config file'
     required: false
     default: '.xcstrings-lint.yml'
+  mode:
+    # Both modes read the whole repository and report everything. The only
+    # difference is what blocks the merge.
+    description: 'full (block on every issue) | ratchet (block only on issues this change introduced)'
+    required: false
+    default: 'full'
   threshold:
     description: 'Minimum coverage percent per language'
     required: false
@@ -30,13 +36,6 @@ inputs:
     description: 'Token used to post the PR comment'
     required: false
     default: ${{ github.token }}
-  mode:
-    # Declared only so a v1 workflow does not trip GitHub's "unexpected input"
-    # warning. The check has no modes any more -- it always reads the whole
-    # repository -- and setting this logs a notice telling you to delete it.
-    description: 'Removed in v2. Every run checks the whole repository.'
-    required: false
-    deprecationMessage: 'The mode input was removed in v2; every run checks the whole repository.'
 
 outputs:
   passed:
@@ -47,6 +46,8 @@ outputs:
     description: 'Number of blocking (error-severity) issues'
   warning-count:
     description: 'Number of non-blocking issues'
+  pre-existing-count:
+    description: 'Issues the base branch already had'
   files-scanned:
     description: 'How many catalog files were read'
   report:

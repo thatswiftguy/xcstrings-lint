@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readInputs, removedModeNotice } from '../src/action/inputs.js'
+import { detectBaseRef, readInputs } from '../src/action/inputs.js'
 import { ConfigError } from '../src/core/config.js'
 
 const reader =
@@ -12,6 +12,7 @@ describe('action inputs', () => {
     expect(readInputs(reader())).toEqual({
       configPath: '.xcstrings-lint.yml',
       configExplicit: false,
+      mode: 'full',
       threshold: 100,
       comment: true,
       annotations: true,
@@ -52,15 +53,40 @@ describe('action inputs', () => {
     }
   })
 
-  it('surfaces a v1 mode input instead of ignoring it silently', () => {
-    const inputs = readInputs(reader({ mode: 'ratchet' }))
-    expect(inputs.removedMode).toBe('ratchet')
-    const notice = removedModeNotice(inputs.removedMode!)
-    expect(notice).toContain('removed in v2')
-    expect(notice).toContain('whole repository')
+  it('reads both modes, and defaults to the full scan', () => {
+    expect(readInputs(reader()).mode).toBe('full')
+    expect(readInputs(reader({ mode: 'full' })).mode).toBe('full')
+    expect(readInputs(reader({ mode: 'ratchet' })).mode).toBe('ratchet')
   })
 
-  it('says nothing about mode when the workflow does not set it', () => {
-    expect(readInputs(reader()).removedMode).toBeUndefined()
+  it('still accepts the old name for the full scan', () => {
+    expect(readInputs(reader({ mode: 'absolute' })).mode).toBe('full')
+  })
+
+  it('rejects a mode it does not know', () => {
+    expect(() => readInputs(reader({ mode: 'strict' }))).toThrowError(
+      /mode must be "full" or "ratchet"/,
+    )
+  })
+})
+
+describe('finding a base to compare against', () => {
+  it('prefers the pull request base branch', () => {
+    expect(
+      detectBaseRef({ pullRequestBase: 'develop', environment: 'main', pushBefore: 'abc123' }),
+    ).toBe('develop')
+  })
+
+  it('falls back to the environment, then to the previous push', () => {
+    expect(detectBaseRef({ environment: 'main', pushBefore: 'abc123' })).toBe('main')
+    expect(detectBaseRef({ pushBefore: 'abc123' })).toBe('abc123')
+  })
+
+  it('ignores the all-zero sha a brand new branch pushes', () => {
+    expect(detectBaseRef({ pushBefore: '0000000000000000000000000000000000000000' })).toBeUndefined()
+  })
+
+  it('returns nothing when the event offers nothing', () => {
+    expect(detectBaseRef({})).toBeUndefined()
   })
 })

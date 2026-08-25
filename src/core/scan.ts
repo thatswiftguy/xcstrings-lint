@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import fastGlob from 'fast-glob'
 import type { ResolvedConfig } from './config.js'
+import { createPathMatcher } from './config.js'
 import { parseXcstrings } from './parse/xcstrings.js'
 import {
   assembleLegacyCatalogs,
@@ -9,6 +7,7 @@ import {
   legacyFileInfo,
   type LegacyFile,
 } from './parse/strings.js'
+import { workingTreeFiles, type RevisionFiles } from './revision.js'
 import { CatalogParseError, type Catalog } from './types.js'
 
 export interface ScanResult {
@@ -20,36 +19,24 @@ export interface ScanResult {
 }
 
 /**
- * Find and parse every catalog in the working tree.
+ * Find and parse every catalog at one revision.
  *
- * The whole repository, every time. There is no base-branch comparison and no
- * incremental mode: a translation that is missing is missing whether or not
- * this particular change is what dropped it, and a check that only looks at the
- * diff will never tell you the thing you actually want to know.
+ * The whole tree, every time. What the base branch is used for is telling a
+ * developer which of these problems they introduced -- never for deciding which
+ * files to look at, because a translation that is missing is missing whether or
+ * not this change is what dropped it.
  */
-export function scan(cwd: string, config: ResolvedConfig): ScanResult {
-  const matched = fastGlob
-    .sync(config.paths, {
-      cwd,
-      dot: true,
-      onlyFiles: true,
-      followSymbolicLinks: false,
-      ignore: config.ignoreFiles,
-    })
-    .sort()
+export function scan(source: RevisionFiles, config: ResolvedConfig): ScanResult {
+  const matches = createPathMatcher(config)
+  const matched = source.list().filter(matches).sort()
 
   const catalogs: Catalog[] = []
   const errors: CatalogParseError[] = []
   const legacy: LegacyFile[] = []
 
   for (const path of matched) {
-    let buffer: Buffer
-    try {
-      buffer = readFileSync(join(cwd, path))
-    } catch (error) {
-      errors.push(new CatalogParseError(path, `could not read: ${(error as Error).message}`))
-      continue
-    }
+    const buffer = source.read(path)
+    if (!buffer) continue
 
     try {
       if (path.endsWith('.xcstrings')) {
@@ -77,4 +64,9 @@ export function scan(cwd: string, config: ResolvedConfig): ScanResult {
     errors,
     matched,
   }
+}
+
+/** Scan the checkout on disk. */
+export function scanWorkingTree(cwd: string, config: ResolvedConfig): ScanResult {
+  return scan(workingTreeFiles(cwd, config), config)
 }

@@ -141,7 +141,7 @@ describe('annotations', () => {
   })
 
   it('points each annotation at a real line in its own file', () => {
-    const plan = planAnnotations(failingScenario().errors)
+    const plan = planAnnotations(failingScenario().blocking)
     expect(plan.annotations.length).toBeGreaterThan(0)
     for (const annotation of plan.annotations) {
       expect(annotation.file).toBe('App/Localizable.xcstrings')
@@ -152,7 +152,7 @@ describe('annotations', () => {
   })
 
   it('titles each annotation with its issue class and key', () => {
-    const titles = planAnnotations(failingScenario().errors).annotations.map((a) => a.title)
+    const titles = planAnnotations(failingScenario().blocking).annotations.map((a) => a.title)
     expect(titles).toContain('Missing translation: payment_save_card_subtitle')
     expect(titles).toContain('Empty translation: payment_cvv_hint')
   })
@@ -349,7 +349,7 @@ describe('sticky comment', () => {
 
   it('states how far below the threshold each language is', () => {
     const input = thresholdScenario()
-    expect(input.errors).toEqual([])
+    expect(input.blocking).toEqual([])
     expect(input.passed).toBe(false)
     expect(renderComment(input)).toContain('`fr` at 50%')
   })
@@ -370,7 +370,7 @@ describe('sticky comment', () => {
 
   it('offers the warnings as an expandable section', () => {
     const input = warningScenario()
-    expect(input.errors).toEqual([])
+    expect(input.blocking).toEqual([])
     expect(input.warnings.length).toBeGreaterThan(0)
 
     const body = renderComment(input)

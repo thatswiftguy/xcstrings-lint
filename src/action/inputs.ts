@@ -1,19 +1,15 @@
 import { ConfigError, DEFAULT_CONFIG_PATH } from '../core/config.js'
+import type { Mode } from '../lint.js'
 
 export interface ActionInputs {
   configPath: string
   /** True when the user named the config path, so "not found" is fatal. */
   configExplicit: boolean
+  mode: Mode
   threshold: number
   comment: boolean
   annotations: boolean
   fail: boolean
-  /**
-   * Set when the workflow still passes the v1 `mode` input. The check has no
-   * modes any more; this exists only so we can say so out loud instead of
-   * silently ignoring it.
-   */
-  removedMode?: string
 }
 
 /** Reads one action input. Injected so this file never imports @actions/core. */
@@ -28,18 +24,27 @@ export type InputReader = (name: string) => string
  */
 export function readInputs(get: InputReader): ActionInputs {
   const configPath = (get('config') || '').trim() || DEFAULT_CONFIG_PATH
-  const mode = (get('mode') || '').trim()
 
   return {
     configPath,
     // The default path is allowed to be absent -- zero-config is supported.
     configExplicit: configPath !== DEFAULT_CONFIG_PATH,
+    mode: readMode(get),
     threshold: readThreshold(get),
     comment: readBoolean(get, 'comment', true),
     annotations: readBoolean(get, 'annotations', true),
     fail: readBoolean(get, 'fail', true),
-    ...(mode === '' ? {} : { removedMode: mode }),
   }
+}
+
+function readMode(get: InputReader): Mode {
+  const value = (get('mode') || '').trim()
+  if (value === '') return 'full'
+  if (value === 'full' || value === 'ratchet') return value
+  // `absolute` was the old name for what `full` does now. Accepting it costs a
+  // line and saves anyone with it in their workflow a broken run.
+  if (value === 'absolute') return 'full'
+  throw new ConfigError(`mode must be "full" or "ratchet", got "${value}"`)
 }
 
 /**
@@ -66,11 +71,29 @@ function readThreshold(get: InputReader): number {
   return value
 }
 
-/** Told to the user once when a v1 workflow still sets `mode`. */
-export function removedModeNotice(mode: string): string {
-  return (
-    `The "mode" input was removed in v2 and "${mode}" is being ignored. ` +
-    'Every run now checks the whole repository; there is no base-branch comparison. ' +
-    'Delete the line from your workflow.'
-  )
+export interface BaseRefSource {
+  /** `payload.pull_request.base.ref`, when the event has one. */
+  pullRequestBase?: string | undefined
+  /** `$GITHUB_BASE_REF`. */
+  environment?: string | undefined
+  /** `payload.before` on a push. */
+  pushBefore?: string | undefined
+}
+
+/**
+ * Work out what to compare against.
+ *
+ * Pull requests give a base branch. Pushes do not, but `payload.before` is the
+ * commit the branch was at, which is the right comparison for a push -- so
+ * `on: push` gets the new-versus-pre-existing split too, without anyone having
+ * to configure it. Undefined simply means no split; only ratchet mode treats
+ * that as fatal.
+ */
+export function detectBaseRef(source: BaseRefSource): string | undefined {
+  if (source.pullRequestBase) return source.pullRequestBase
+  if (source.environment) return source.environment
+  // All-zeros means the branch did not exist before this push.
+  const before = source.pushBefore
+  if (before && !/^0+$/.test(before)) return before
+  return undefined
 }
