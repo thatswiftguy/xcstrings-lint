@@ -1,10 +1,4 @@
-import {
-  code,
-  pluralise,
-  renderKeySections,
-  renderLanguageTable,
-  type ReportInput,
-} from './model.js'
+import { pluralise, renderKeySections, renderLanguageTable, type ReportInput } from './model.js'
 
 /**
  * Hidden marker used to find our own comment on re-runs.
@@ -18,14 +12,14 @@ export const COMMENT_MARKER = '<!-- xcstrings-lint -->'
 export const MAX_COMMENT_LENGTH = 60000
 
 const MAX_DETAIL_ROWS = 40
-/** The backlog is context, not the finding -- show less of it. */
-const MAX_PRE_EXISTING_ROWS = 20
+/** Warnings are context, not the finding -- show less of them. */
+const MAX_WARNING_ROWS = 20
 
 /**
  * Render the sticky comment.
  *
- * Layout is deliberately two-tier. A reviewer opening the PR should learn
- * what broke and where in about three seconds -- one headline, one grouped
+ * Layout is deliberately two-tier. A reviewer opening the PR should learn what
+ * is broken and where in about three seconds -- one headline, one grouped
  * table -- and everything past that is collapsed until they ask for it. The
  * detail matters, but not before they know whether it concerns them.
  */
@@ -33,30 +27,26 @@ export function renderComment(input: ReportInput): string {
   const status = input.passed ? '**passed**' : '**failed**'
   const lines: string[] = [`### 🌍 xcstrings-lint — ${status}`, '', headline(input), '']
 
-  const summary = renderLanguageTable(input.result.languages, input.blocking)
+  const summary = renderLanguageTable(input.result.languages, input.errors)
   if (summary) lines.push(summary, '')
 
-  for (const section of renderKeySections(input.blocking, input.result.languages, MAX_DETAIL_ROWS)) {
+  for (const section of renderKeySections(input.errors, input.result.languages, MAX_DETAIL_ROWS)) {
     lines.push(section, '')
   }
 
-  const fixed = input.comparison?.fixedIssues.length ?? 0
-  if (fixed > 0) lines.push(`✅ ${pluralise(fixed, 'issue')} fixed on this branch.`, '')
-
-  // The backlog gets a section of its own rather than a bare count. It is not
-  // this PR's to fix, so it stays collapsed and out of the headline -- but a
-  // reviewer who wants to know what is already broken should not have to go
-  // digging through the job summary to find out.
-  const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue))
-  if (input.mode === 'ratchet' && carried.length > 0) {
+  // Warnings get a section of their own rather than a bare count. They do not
+  // block the merge, so they stay collapsed and out of the headline -- but a
+  // reviewer who wants to know what else is off should not have to go digging
+  // through the job summary to find out.
+  if (input.warnings.length > 0) {
     const body = [
-      renderLanguageTable(input.result.languages, carried),
-      ...renderKeySections(carried, input.result.languages, MAX_PRE_EXISTING_ROWS, {
+      renderLanguageTable(input.result.languages, input.warnings),
+      ...renderKeySections(input.warnings, input.result.languages, MAX_WARNING_ROWS, {
         collapsed: false,
       }),
     ].filter(Boolean)
     lines.push(
-      `<details><summary><b>Pre-existing issues</b> · ${carried.length} — not introduced by this PR</summary>`,
+      `<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`,
       '',
       body.join('\n\n'),
       '',
@@ -70,30 +60,30 @@ export function renderComment(input: ReportInput): string {
 }
 
 function headline(input: ReportInput): string {
-  const base = input.baseRef ? code(input.baseRef) : 'the base branch'
-  const keys = new Set(input.blocking.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size
-  const languages = new Set(input.blocking.map((issue) => issue.language).filter(Boolean)).size
+  const shortfalls = input.shortfalls
+  if (input.errors.length === 0 && shortfalls.length === 0) {
+    return `Every language is fully translated across ${pluralise(input.filesScanned, 'file')}.`
+  }
 
-  if (input.mode === 'ratchet') {
-    if (input.blocking.length === 0) return `No new localization issues vs ${base}.`
+  if (input.errors.length === 0) {
     return (
-      `**${pluralise(input.blocking.length, 'new issue')}** vs ${base} — ` +
-      `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`
+      `**${pluralise(shortfalls.length, 'language')}** below the ${input.threshold}% threshold: ` +
+      shortfalls.map((s) => `\`${s.language}\` at ${s.percent}%`).join(', ') +
+      '.'
     )
   }
 
-  const shortfalls = input.shortfalls ?? []
-  if (input.blocking.length === 0 && shortfalls.length === 0) {
-    return 'Every language is fully translated.'
-  }
+  const keys = new Set(input.errors.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size
+  const languages = new Set(input.errors.map((issue) => issue.language).filter(Boolean)).size
   return (
-    `**${pluralise(input.blocking.length, 'issue')}** — ` +
+    `**${pluralise(input.errors.length, 'issue')}** — ` +
     `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`
   )
 }
 
 function footer(input: ReportInput): string {
-  const parts = [`Mode: \`${input.mode}\``]
+  const parts = [`${pluralise(input.filesScanned, 'file')} checked`]
+  if (input.warnings.length > 0) parts.push(`${pluralise(input.warnings.length, 'warning')}`)
   if (input.annotationsDropped) {
     parts.push(`${input.annotationsDropped} annotations not shown inline — see the job summary`)
   }

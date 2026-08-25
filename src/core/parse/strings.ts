@@ -4,11 +4,12 @@ import {
   CatalogParseError,
   type Catalog,
   type CatalogEntry,
+  type DuplicateKey,
   type Localization,
   type SourceLocation,
   type ValueNode,
-} from './types.js'
-import { type PluralCategory } from './cldr-plurals.js'
+} from '../types.js'
+import { type PluralCategory } from '../cldr-plurals.js'
 
 const PLURAL_CATEGORIES = new Set<string>(['zero', 'one', 'two', 'few', 'many', 'other'])
 
@@ -476,6 +477,7 @@ export function assembleLegacyCatalogs(
     /** key -> first location seen, for the entry anchor */
     anchors: Map<string, SourceLocation>
     order: string[]
+    duplicateKeys: DuplicateKey[]
   }
 
   const tables = new Map<string, Table>()
@@ -494,6 +496,7 @@ export function assembleLegacyCatalogs(
         keys: new Map(),
         anchors: new Map(),
         order: [],
+        duplicateKeys: [],
       }
       tables.set(id, table)
     }
@@ -506,6 +509,14 @@ export function assembleLegacyCatalogs(
         table.keys.set(key, byLanguage)
         table.order.push(key)
       }
+      // Only a redeclaration *within the same file* is a duplicate. A key that
+      // appears in both `Localizable.strings` and `Localizable.stringsdict` is
+      // the documented way to give a key plural forms, not a mistake.
+      const previous = byLanguage.get(info.language)
+      if (previous && previous.loc.file === loc.file) {
+        table.duplicateKeys.push({ key, loc, firstLoc: previous.loc, language: info.language })
+      }
+
       byLanguage.set(info.language, localization)
       if (!table.anchors.has(key)) table.anchors.set(key, loc)
     }
@@ -556,6 +567,7 @@ export function assembleLegacyCatalogs(
         sourceLanguage,
         entries,
         languages,
+        duplicateKeys: table.duplicateKeys,
       }
     })
     .sort((a, b) => a.path.localeCompare(b.path))

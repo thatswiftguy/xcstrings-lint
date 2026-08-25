@@ -5,7 +5,7 @@ import type {
   VariationKind,
   VariationNode,
   VariationStep,
-} from './types.js'
+} from '../types.js'
 
 /**
  * Flatten a value tree into its leaves.

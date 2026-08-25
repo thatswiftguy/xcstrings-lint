@@ -4,6 +4,7 @@ import {
   CatalogParseError,
   type Catalog,
   type CatalogEntry,
+  type DuplicateKey,
   type Localization,
   type SourceLocation,
   type StringUnit,
@@ -11,7 +12,7 @@ import {
   type ValueNode,
   type VariationKind,
   type VariationNode,
-} from './types.js'
+} from '../types.js'
 
 const VARIATION_KINDS = new Set<string>(['plural', 'device'])
 
@@ -62,8 +63,13 @@ export function parseXcstrings(filePath: string, raw: string): Catalog {
     throw new CatalogParseError(filePath, '"strings" must be a JSON object', at(stringsNode.offset).line)
   }
 
-  const entries: CatalogEntry[] = []
-  const languages = new Set<LanguageAccumulator>()
+  // Insertion-ordered, and keyed so a redeclaration replaces rather than
+  // appends. JSON is last-wins, so two `"app.title"` blocks are one entry as
+  // far as Xcode is concerned -- appending both would double-count the key in
+  // every coverage figure. The redeclaration is recorded instead.
+  const byKey = new Map<string, CatalogEntry>()
+  const duplicateKeys: DuplicateKey[] = []
+  const languages = new Set<string>()
 
   for (const prop of objectProps(stringsNode)) {
     // An empty key is legal JSON but meaningless as a catalog entry, and Xcode
@@ -78,11 +84,17 @@ export function parseXcstrings(filePath: string, raw: string): Catalog {
       )
     }
 
-    const entry = parseEntry(prop.key, prop.value, at(prop.keyNode.offset), at)
-    for (const lang of Object.keys(entry.localizations)) languages.add(lang)
-    entries.push(entry)
+    const loc = at(prop.keyNode.offset)
+    const previous = byKey.get(prop.key)
+    if (previous) duplicateKeys.push({ key: prop.key, loc, firstLoc: previous.loc })
+
+    byKey.set(prop.key, parseEntry(prop.key, prop.value, loc, at))
   }
 
+  const entries = [...byKey.values()]
+  for (const entry of entries) {
+    for (const language of Object.keys(entry.localizations)) languages.add(language)
+  }
   languages.add(sourceLanguage)
 
   return {
@@ -92,10 +104,9 @@ export function parseXcstrings(filePath: string, raw: string): Catalog {
     ...(version === undefined ? {} : { version }),
     entries,
     languages: [...languages].sort(),
+    duplicateKeys,
   }
 }
-
-type LanguageAccumulator = string
 
 function parseEntry(
   key: string,

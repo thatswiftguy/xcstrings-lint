@@ -91,6 +91,24 @@ export interface CatalogEntry {
 
 export type CatalogFormat = 'xcstrings' | 'strings' | 'stringsdict'
 
+/**
+ * The same key declared twice in one file.
+ *
+ * Recorded at parse time rather than derived later, because both formats
+ * resolve a redeclaration by silently keeping one of them -- JSON is last-wins,
+ * and so is a legacy table. By the time the analyzer sees the catalog the
+ * evidence is gone, so the parser has to hand it over.
+ */
+export interface DuplicateKey {
+  key: string
+  /** Where the redeclaration is. */
+  loc: SourceLocation
+  /** Where the key was first declared. */
+  firstLoc: SourceLocation
+  /** The language whose file holds it. Only set for legacy tables. */
+  language?: LanguageCode
+}
+
 export interface Catalog {
   /**
    * Repo-relative POSIX path. For `.xcstrings` this is the file. For legacy
@@ -104,6 +122,8 @@ export interface Catalog {
   entries: CatalogEntry[]
   /** Every language that appears anywhere in this catalog, sorted. */
   languages: LanguageCode[]
+  /** Keys declared more than once. Empty for a well-formed catalog. */
+  duplicateKeys: DuplicateKey[]
 }
 
 /**
@@ -145,15 +165,30 @@ export interface Leaf {
 export const STATE_ISSUE_CLASSES = ['missing', 'empty', 'new', 'needsReview', 'stale'] as const
 export type StateIssueClass = (typeof STATE_ISSUE_CLASSES)[number]
 
-/** Structural checks. Orthogonal to the state classes and to each other. */
-export const STRUCTURAL_ISSUE_CLASSES = ['formatSpecifier', 'pluralCoverage'] as const
+/**
+ * Per-(key, language) checks that are orthogonal to the state classes and to
+ * each other. A string can be `needs_review` *and* have a broken specifier.
+ */
+export const STRUCTURAL_ISSUE_CLASSES = [
+  'formatSpecifier',
+  'pluralCoverage',
+  'identicalToSource',
+] as const
 export type StructuralIssueClass = (typeof STRUCTURAL_ISSUE_CLASSES)[number]
 
-export type IssueClass = StateIssueClass | StructuralIssueClass
+/**
+ * Catalog hygiene: problems with the shape of the catalog itself rather than
+ * with any one translation. These are key-scoped, not language-scoped.
+ */
+export const CATALOG_ISSUE_CLASSES = ['duplicateKey', 'duplicateValue', 'orphanKey'] as const
+export type CatalogIssueClass = (typeof CATALOG_ISSUE_CLASSES)[number]
+
+export type IssueClass = StateIssueClass | StructuralIssueClass | CatalogIssueClass
 
 export const ALL_ISSUE_CLASSES: readonly IssueClass[] = [
   ...STATE_ISSUE_CLASSES,
   ...STRUCTURAL_ISSUE_CLASSES,
+  ...CATALOG_ISSUE_CLASSES,
 ]
 
 /**
@@ -195,6 +230,10 @@ export interface LanguageCoverage {
   translatable: number
   /** Of those, how many have a complete, non-empty translation. */
   translated: number
-  /** 0-100, rounded to one decimal. 100 when there is nothing to translate. */
+  /**
+   * 0-100, rounded *down* to one decimal. Never rounds up: a catalog with one
+   * missing string in three thousand must not read as 100%, because that is
+   * exactly the number a `threshold: 100` gate is compared against.
+   */
   percent: number
 }

@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { analyze } from '../src/core/analyze.js'
-import { defaultConfig } from '../src/core/config.js'
-import { loadCatalogs, type RevisionFiles } from '../src/core/load.js'
-import { compareToBase } from '../src/core/ratchet.js'
-import { belowThreshold } from '../src/core/ratchet.js'
+import { defaultConfig, parseConfig, type ResolvedConfig } from '../src/core/config.js'
+import { parseXcstrings } from '../src/core/parse/xcstrings.js'
+import { buildReport } from '../src/lint.js'
 import { DEFAULT_MAX_PER_LEVEL, planAnnotations } from '../src/report/annotations.js'
 import { COMMENT_MARKER, isOurComment, renderComment, truncate } from '../src/report/comment.js'
 import { renderParseErrors, renderSummary } from '../src/report/summary.js'
 import {
   code,
-  delta,
   groupLanguagesByIssues,
   percent,
   renderKeySections,
@@ -20,14 +18,6 @@ import type { ReportInput } from '../src/report/model.js'
 import type { Issue } from '../src/core/types.js'
 
 const config = defaultConfig()
-
-function memoryFiles(files: Record<string, string>, label = 'memory'): RevisionFiles {
-  return {
-    label,
-    list: () => Object.keys(files),
-    read: (path) => (files[path] === undefined ? undefined : Buffer.from(files[path], 'utf8')),
-  }
-}
 
 type Cell = string | null
 function catalog(entries: Record<string, Record<string, Cell>>): string {
@@ -43,101 +33,63 @@ function catalog(entries: Record<string, Record<string, Cell>>): string {
   return JSON.stringify({ sourceLanguage: 'en', strings, version: '1.0' }, null, 2)
 }
 
-/** A ratchet run mirroring the payment-flow example from the spec. */
-function paymentScenario(): ReportInput {
-  const base = {
-    'App/Localizable.xcstrings': catalog({
-      payment_save_card_title: { en: 'Save card', de: 'Karte', fr: 'Carte', ja: 'カード' },
-      payment_cvv_hint: { en: 'CVV', de: 'CVV', fr: 'CVV', ja: 'CVV' },
-    }),
-  }
-  const head = {
+interface ScenarioOptions {
+  threshold?: number
+  config?: ResolvedConfig
+}
+
+function reportFor(files: Record<string, string>, options: ScenarioOptions = {}): ReportInput {
+  const resolved = options.config ?? config
+  const catalogs = Object.entries(files).map(([path, text]) => parseXcstrings(path, text))
+  return buildReport(analyze(catalogs, resolved), {
+    config: resolved,
+    threshold: options.threshold ?? 100,
+    filesScanned: catalogs.length,
+  })
+}
+
+/** A payment flow with a missing translation, an empty one and a gap in Japanese. */
+function failingScenario(): ReportInput {
+  return reportFor({
     'App/Localizable.xcstrings': catalog({
       payment_save_card_title: { en: 'Save card', de: 'Karte', fr: 'Carte', ja: null },
       payment_save_card_subtitle: { en: 'Save for later', de: 'Später', fr: null, ja: null },
       payment_cvv_hint: { en: 'CVV', de: 'CVV', fr: '', ja: null },
     }),
-  }
-
-  const headCatalogs = loadCatalogs(memoryFiles(head, 'head'), config).catalogs
-  const comparison = compareToBase(headCatalogs, memoryFiles(base, 'origin/main'), config)
-
-  return {
-    mode: 'ratchet',
-    passed: false,
-    result: comparison.head,
-    allIssues: comparison.head.issues,
-    blocking: comparison.newIssues,
-    comparison,
-    baseRef: 'main',
-  }
+  })
 }
 
-/** A clean PR sitting on top of a base branch that already has a backlog. */
-function backlogScenario(): ReportInput {
-  const shared = {
-    old_a: { en: 'A', de: 'A', fr: null, ja: null },
-    old_b: { en: 'B', de: 'B', fr: null, ja: null },
-    old_empty: { en: 'C', de: '', fr: '', ja: '' },
-  }
-  const base = { 'App/Localizable.xcstrings': catalog(shared) }
-  const head = {
+/** Nothing blocking, but two keys share a source string and one is orphaned. */
+function warningScenario(): ReportInput {
+  return reportFor({
     'App/Localizable.xcstrings': catalog({
-      ...shared,
-      brand_new: { en: 'New', de: 'Neu', fr: 'Nouveau', ja: '新規' },
+      cart_title: { en: 'Basket', de: 'Korb', fr: 'Panier' },
+      checkout_title: { en: 'Basket', de: 'Korb', fr: 'Panier' },
+      dropped_key: { de: 'Verwaist', fr: 'Orphelin' },
     }),
-  }
-  const headCatalogs = loadCatalogs(memoryFiles(head, 'head'), config).catalogs
-  const comparison = compareToBase(headCatalogs, memoryFiles(base, 'origin/main'), config)
-  return {
-    mode: 'ratchet',
-    passed: true,
-    result: comparison.head,
-    allIssues: comparison.head.issues,
-    blocking: comparison.newIssues,
-    comparison,
-    baseRef: 'main',
-  }
+  })
 }
 
 function cleanScenario(): ReportInput {
-  const files = {
+  return reportFor({
     'App/Localizable.xcstrings': catalog({
-      a: { en: 'A', de: 'A', fr: 'A' },
-      b: { en: 'B', de: 'B', fr: 'B' },
+      a: { en: 'A', de: 'Ah', fr: 'Aa' },
+      b: { en: 'B', de: 'Be', fr: 'Bé' },
     }),
-  }
-  const headCatalogs = loadCatalogs(memoryFiles(files, 'head'), config).catalogs
-  const comparison = compareToBase(headCatalogs, memoryFiles(files, 'origin/main'), config)
-  return {
-    mode: 'ratchet',
-    passed: true,
-    result: comparison.head,
-    allIssues: comparison.head.issues,
-    blocking: comparison.newIssues,
-    comparison,
-    baseRef: 'main',
-  }
+  })
 }
 
-function absoluteScenario(): ReportInput {
-  const files = {
-    'App/Localizable.xcstrings': catalog({
-      a: { en: 'A', de: 'A', fr: 'A' },
-      b: { en: 'B', de: 'B', fr: null },
-    }),
-  }
-  const result = analyze(loadCatalogs(memoryFiles(files), config).catalogs, config)
-  const shortfalls = belowThreshold(result.coverage, 100, config.required)
-  return {
-    mode: 'absolute',
-    passed: false,
-    result,
-    allIssues: result.issues,
-    blocking: result.issues,
-    shortfalls,
-    threshold: 100,
-  }
+/** Coverage below the threshold, with every issue class switched off. */
+function thresholdScenario(): ReportInput {
+  return reportFor(
+    {
+      'App/Localizable.xcstrings': catalog({
+        a: { en: 'A', de: 'Ah', fr: 'Aa' },
+        b: { en: 'B', de: 'Be', fr: null },
+      }),
+    },
+    { config: parseConfig('failOn: []\nwarnOn: []\nformatSpecifiers: off\norphanKeys: off') },
+  )
 }
 
 /* -------------------------------------------------------------------------- */
@@ -155,13 +107,6 @@ describe('markdown helpers', () => {
     expect(percent(100)).toBe('100%')
     expect(percent(99.4)).toBe('99.4%')
     expect(percent(0)).toBe('0%')
-  })
-
-  it('shows direction of travel', () => {
-    expect(delta(100, 99.4)).toBe('🔻 0.6%')
-    expect(delta(99.4, 100)).toBe('🔺 0.6%')
-    expect(delta(100, 100)).toBe('—')
-    expect(delta(undefined, 50)).toBe('new')
   })
 })
 
@@ -196,8 +141,7 @@ describe('annotations', () => {
   })
 
   it('points each annotation at a real line in its own file', () => {
-    const input = paymentScenario()
-    const plan = planAnnotations(input.blocking)
+    const plan = planAnnotations(failingScenario().errors)
     expect(plan.annotations.length).toBeGreaterThan(0)
     for (const annotation of plan.annotations) {
       expect(annotation.file).toBe('App/Localizable.xcstrings')
@@ -208,10 +152,17 @@ describe('annotations', () => {
   })
 
   it('titles each annotation with its issue class and key', () => {
-    const input = paymentScenario()
-    const titles = planAnnotations(input.blocking).annotations.map((a) => a.title)
+    const titles = planAnnotations(failingScenario().errors).annotations.map((a) => a.title)
     expect(titles).toContain('Missing translation: payment_save_card_subtitle')
     expect(titles).toContain('Empty translation: payment_cvv_hint')
+  })
+
+  it('has a title for every issue class', () => {
+    const warnings = warningScenario().warnings
+    expect(warnings.length).toBeGreaterThan(0)
+    for (const annotation of planAnnotations(warnings).annotations) {
+      expect(annotation.title).not.toMatch(/undefined/)
+    }
   })
 })
 
@@ -313,6 +264,12 @@ describe('the summary table', () => {
   it('renders nothing when there is nothing wrong', () => {
     expect(renderLanguageTable(['de', 'fr'], [])).toBe('')
   })
+
+  it('leaves out languages with nothing wrong', () => {
+    const table = renderLanguageTable(['de', 'fr'], [issue({ language: 'de' })])
+    expect(table).toContain('`de`')
+    expect(table).not.toContain('`fr`')
+  })
 })
 
 describe('key sections', () => {
@@ -367,7 +324,7 @@ describe('key sections', () => {
 
 describe('sticky comment', () => {
   it('always carries the marker', () => {
-    for (const input of [paymentScenario(), cleanScenario(), absoluteScenario()]) {
+    for (const input of [failingScenario(), cleanScenario(), thresholdScenario()]) {
       expect(renderComment(input)).toContain(COMMENT_MARKER)
     }
   })
@@ -378,72 +335,80 @@ describe('sticky comment', () => {
     expect(isOurComment(undefined)).toBe(false)
   })
 
-  it('renders a failing ratchet report', () => {
-    expect(renderComment(paymentScenario())).toMatchSnapshot()
+  it('renders a failing report', () => {
+    expect(renderComment(failingScenario())).toMatchSnapshot()
   })
 
-  it('renders a passing ratchet report', () => {
+  it('renders a passing report', () => {
     expect(renderComment(cleanScenario())).toMatchSnapshot()
   })
 
-  it('renders an absolute-mode report', () => {
-    expect(renderComment(absoluteScenario())).toMatchSnapshot()
+  it('renders a report that only misses the coverage threshold', () => {
+    expect(renderComment(thresholdScenario())).toMatchSnapshot()
   })
 
-  it('shows no percentages anywhere', () => {
-    for (const input of [paymentScenario(), absoluteScenario()]) {
-      expect(renderComment(input)).not.toMatch(/\d%/)
-    }
+  it('states how far below the threshold each language is', () => {
+    const input = thresholdScenario()
+    expect(input.errors).toEqual([])
+    expect(input.passed).toBe(false)
+    expect(renderComment(input)).toContain('`fr` at 50%')
+  })
+
+  it('counts keys and languages rather than percentages when issues exist', () => {
+    expect(renderComment(failingScenario())).not.toMatch(/\d%/)
   })
 
   it('keeps the detail collapsed so the summary reads first', () => {
-    const body = renderComment(paymentScenario())
+    const body = renderComment(failingScenario())
     expect(body).not.toContain('<details open>')
     expect(body.indexOf('| Languages |')).toBeLessThan(body.indexOf('<details>'))
   })
 
-  it('offers the pre-existing backlog as an expandable section', () => {
-    const input = backlogScenario()
-    expect(input.blocking).toEqual([])
-    expect(input.allIssues.length).toBeGreaterThan(0)
+  it('says how many files it checked', () => {
+    expect(renderComment(cleanScenario())).toContain('1 file checked')
+  })
+
+  it('offers the warnings as an expandable section', () => {
+    const input = warningScenario()
+    expect(input.errors).toEqual([])
+    expect(input.warnings.length).toBeGreaterThan(0)
 
     const body = renderComment(input)
-    // Still a pass: the backlog is context, not this PR's verdict.
+    // Still a pass: warnings never decide the verdict.
     expect(body).toContain('**passed**')
-    expect(body).toContain('No new localization issues')
     expect(body).toContain(
-      `<details><summary><b>Pre-existing issues</b> · ${input.allIssues.length} — not introduced by this PR</summary>`,
+      `<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`,
     )
   })
 
-  it('names the pre-existing keys, not just a count', () => {
-    const body = renderComment(backlogScenario())
-    expect(body).toContain('| `old_a` |')
-    expect(body).toContain('**Missing translations** ·')
-    expect(body).toContain('| Languages | Missing | Empty | Total |')
+  it('names the warning keys, not just a count', () => {
+    const body = renderComment(warningScenario())
+    expect(body).toContain('**Duplicate source strings** ·')
+    expect(body).toContain('`checkout_title`')
+    expect(body).toContain('**Orphan keys** ·')
   })
 
   it('does not nest one collapsible block inside another', () => {
-    const body = renderComment(backlogScenario())
+    const body = renderComment(warningScenario())
     const opens = (body.match(/<details>/g) ?? []).length
     const closes = (body.match(/<\/details>/g) ?? []).length
     expect(opens).toBe(closes)
-    // Exactly one block: the backlog. Its class sections render flat inside it.
+    // Exactly one block: the warnings. Its class sections render flat inside it.
     expect(opens).toBe(1)
   })
 
-  it('omits the backlog section when there is no backlog', () => {
+  it('omits the warnings section when there are none', () => {
     const body = renderComment(cleanScenario())
-    expect(body).not.toContain('Pre-existing')
+    expect(body).not.toContain('Warnings')
     expect(body).not.toContain('<details>')
   })
 
-  it('renders a passing report that carries a backlog', () => {
-    expect(renderComment(backlogScenario())).toMatchSnapshot()
+  it('renders a passing report that carries warnings', () => {
+    expect(renderComment(warningScenario())).toMatchSnapshot()
   })
 
   it('keeps the marker when the body has to be truncated', () => {
-    const body = renderComment(paymentScenario())
+    const body = renderComment(failingScenario())
     const cut = truncate(body, 300)
     expect(cut.length).toBeLessThanOrEqual(300)
     expect(cut).toContain(COMMENT_MARKER)
@@ -458,22 +423,27 @@ describe('sticky comment', () => {
 })
 
 describe('job summary', () => {
-  it('renders a failing ratchet report', () => {
-    expect(renderSummary(paymentScenario())).toMatchSnapshot()
+  it('renders a failing report', () => {
+    expect(renderSummary(failingScenario())).toMatchSnapshot()
   })
 
-  it('renders an absolute-mode report', () => {
-    expect(renderSummary(absoluteScenario())).toMatchSnapshot()
+  it('renders a threshold-only report', () => {
+    expect(renderSummary(thresholdScenario())).toMatchSnapshot()
   })
 
-  it('separates new issues from pre-existing ones', () => {
-    const summary = renderSummary(paymentScenario())
-    expect(summary).toContain('New issues')
-    expect(summary).toContain('Coverage')
+  it('carries the issues and the standing coverage figure', () => {
+    const summary = renderSummary(failingScenario())
+    expect(summary).toContain('### Issues')
+    expect(summary).toContain('### Coverage')
+    expect(summary).toContain('| Language | Coverage | Translated | Threshold | Status |')
+  })
+
+  it('shows the translated fraction, not only a percentage', () => {
+    expect(renderSummary(thresholdScenario())).toContain('| 1 / 2 |')
   })
 
   it('notes annotations the cap discarded', () => {
-    const input = { ...paymentScenario(), annotationsDropped: 23 }
+    const input = { ...failingScenario(), annotationsDropped: 23 }
     expect(renderSummary(input)).toContain('23 annotations were not shown inline')
     expect(renderComment(input)).toContain('23 annotations not shown inline')
   })

@@ -57441,13 +57441,436 @@ function getOctokit(token, options, ...additionalPlugins) {
     return new GitHubWithPlugins(getOctokitOptions(token, options));
 }
 //# sourceMappingURL=github.js.map
+;// CONCATENATED MODULE: ./src/core/types.ts
+/**
+ * Domain model shared by the parsers, the analyzer and the reporters.
+ *
+ * Everything here is format-neutral: a `.xcstrings` String Catalog and a set of
+ * legacy `.lproj/*.strings` tables both normalise into a `Catalog`, so the
+ * analyzer never has to know which one it came from.
+ */
+/**
+ * A file we could not parse. These are always fatal (exit 2): a `.xcstrings`
+ * that is not valid JSON means something upstream is broken, and silently
+ * reporting 100% coverage for it would be worse than stopping.
+ */
+class CatalogParseError extends Error {
+    file;
+    line;
+    column;
+    constructor(file, message, line, column) {
+        super(message);
+        this.name = 'CatalogParseError';
+        this.file = file;
+        this.line = line;
+        this.column = column;
+    }
+}
+/**
+ * Per-(key, language) translation states. These are mutually exclusive: a pair
+ * is at most one of them, resolved by `STATE_PRECEDENCE`.
+ */
+const STATE_ISSUE_CLASSES = ['missing', 'empty', 'new', 'needsReview', 'stale'];
+/**
+ * Per-(key, language) checks that are orthogonal to the state classes and to
+ * each other. A string can be `needs_review` *and* have a broken specifier.
+ */
+const STRUCTURAL_ISSUE_CLASSES = [
+    'formatSpecifier',
+    'pluralCoverage',
+    'identicalToSource',
+];
+/**
+ * Catalog hygiene: problems with the shape of the catalog itself rather than
+ * with any one translation. These are key-scoped, not language-scoped.
+ */
+const CATALOG_ISSUE_CLASSES = ['duplicateKey', 'duplicateValue', 'orphanKey'];
+const ALL_ISSUE_CLASSES = [
+    ...STATE_ISSUE_CLASSES,
+    ...STRUCTURAL_ISSUE_CLASSES,
+    ...CATALOG_ISSUE_CLASSES,
+];
+/**
+ * Order in which state classes win when a pair qualifies for several -- a unit
+ * with `state: "new"` and `value: ""` is both `new` and `empty`. Reporting it
+ * twice would triple-count the same miss and make the totals lie.
+ */
+const STATE_PRECEDENCE = [
+    'missing',
+    'empty',
+    'new',
+    'needsReview',
+    'stale',
+];
+
+;// CONCATENATED MODULE: ./src/report/model.ts
+
+/** Inline code that survives a Markdown table cell. */
+function code(value) {
+    if (value === '')
+        return '``';
+    const fence = value.includes('`') ? '``' : '`';
+    const padded = value.startsWith('`') || value.endsWith('`') ? ` ${value} ` : value;
+    return `${fence}${padded.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')}${fence}`;
+}
+function percent(value) {
+    return `${Number.isInteger(value) ? value : value.toFixed(1)}%`;
+}
+function table(headers, rows) {
+    return [
+        `| ${headers.join(' | ')} |`,
+        `|${headers.map(() => '---').join('|')}|`,
+        ...rows.map((row) => `| ${row.join(' | ')} |`),
+    ].join('\n');
+}
+function pluralise(count, singular, plural = `${singular}s`) {
+    return `${count} ${count === 1 ? singular : plural}`;
+}
+function coverageRows(input) {
+    const errorsByLanguage = new Map();
+    for (const issue of input.errors) {
+        if (!issue.language)
+            continue;
+        errorsByLanguage.set(issue.language, (errorsByLanguage.get(issue.language) ?? 0) + 1);
+    }
+    return input.result.languages.map((language) => {
+        const coverage = input.result.coverage[language];
+        return {
+            language,
+            percent: coverage?.percent ?? 0,
+            translated: coverage?.translated ?? 0,
+            translatable: coverage?.translatable ?? 0,
+            errors: errorsByLanguage.get(language) ?? 0,
+        };
+    });
+}
+function renderCoverageTable(input) {
+    const rows = coverageRows(input);
+    if (rows.length === 0)
+        return '_No target languages found._';
+    const shortfalls = new Set(input.shortfalls.map((shortfall) => shortfall.language));
+    return table(['Language', 'Coverage', 'Translated', 'Threshold', 'Status'], rows.map((row) => [
+        code(row.language),
+        percent(row.percent),
+        `${row.translated} / ${row.translatable}`,
+        percent(input.threshold),
+        shortfalls.has(row.language) ? '✕ below' : '✓',
+    ]));
+}
+/** Section headings. */
+const CLASS_LABELS = {
+    missing: 'Missing translations',
+    empty: 'Empty values',
+    new: 'Untranslated (new)',
+    needsReview: 'Needs review',
+    stale: 'Stale keys',
+    formatSpecifier: 'Format specifier mismatches',
+    pluralCoverage: 'Incomplete plural coverage',
+    identicalToSource: 'Identical to the source string',
+    duplicateKey: 'Duplicate keys',
+    duplicateValue: 'Duplicate source strings',
+    orphanKey: 'Orphan keys',
+};
+/** Short forms, so the summary table stays narrow enough to scan. */
+const CLASS_COLUMNS = {
+    missing: 'Missing',
+    empty: 'Empty',
+    new: 'New',
+    needsReview: 'Review',
+    stale: 'Stale',
+    formatSpecifier: 'Format',
+    pluralCoverage: 'Plurals',
+    identicalToSource: 'Same as source',
+    duplicateKey: 'Dup key',
+    duplicateValue: 'Dup text',
+    orphanKey: 'Orphan',
+};
+/** Beyond this many codes in one cell, list a few and count the rest. */
+const MAX_LANGUAGES_PER_CELL = 8;
+/**
+ * Group languages that have exactly the same issue counts onto one row.
+ *
+ * A project shipping eight locales usually breaks all of them the same way, so
+ * eight near-identical rows is eight times the reading for the same fact. One
+ * row saying `de, es, fr, it, ja, ko, pt-BR, zh-Hans -- 3 missing` is the
+ * finding; the per-language split only matters when it actually differs.
+ */
+function groupLanguagesByIssues(languages, issues) {
+    const empty = () => Object.fromEntries(ALL_ISSUE_CLASSES.map((c) => [c, 0]));
+    const perLanguage = new Map(languages.map((language) => [language, empty()]));
+    for (const issue of issues) {
+        if (!issue.language)
+            continue;
+        const counts = perLanguage.get(issue.language);
+        if (counts)
+            counts[issue.class]++;
+    }
+    const grouped = new Map();
+    for (const [language, counts] of perLanguage) {
+        const key = JSON.stringify(counts);
+        const existing = grouped.get(key);
+        if (existing)
+            existing.languages.push(language);
+        else {
+            grouped.set(key, {
+                languages: [language],
+                counts,
+                total: Object.values(counts).reduce((a, b) => a + b, 0),
+            });
+        }
+    }
+    return [...grouped.values()]
+        .map((group) => ({ ...group, languages: group.languages.sort() }))
+        .sort((a, b) => b.total - a.total || (a.languages[0] ?? '').localeCompare(b.languages[0] ?? ''));
+}
+/** `de, fr, ja`, or `all 12 languages` when the group covers every one. */
+function renderLanguageCell(languages, totalLanguages) {
+    if (languages.length === 0)
+        return '—';
+    if (totalLanguages > 1 && languages.length === totalLanguages) {
+        return `all ${totalLanguages} languages`;
+    }
+    if (languages.length > MAX_LANGUAGES_PER_CELL) {
+        const shown = languages.slice(0, MAX_LANGUAGES_PER_CELL).map(code).join(', ');
+        return `${shown} +${languages.length - MAX_LANGUAGES_PER_CELL} more`;
+    }
+    return languages.map(code).join(', ');
+}
+/**
+ * Counts per language group, with a column only for the classes that actually
+ * occurred. Percentages are deliberately absent: "2 missing" is something a
+ * reviewer can act on, "98.8%" is not.
+ */
+function renderLanguageTable(languages, issues) {
+    // Languages with nothing wrong are dropped: this is a table of problems, and
+    // a row of dashes saying "nothing here" is a line of reading for no finding.
+    const groups = groupLanguagesByIssues(languages, issues).filter((group) => group.total > 0);
+    if (groups.length === 0)
+        return '';
+    const classes = ALL_ISSUE_CLASSES.filter((c) => groups.some((g) => g.counts[c] > 0));
+    if (classes.length === 0)
+        return '';
+    const headers = ['Languages', ...classes.map((c) => CLASS_COLUMNS[c]), 'Total'];
+    const rows = groups.map((group) => [
+        renderLanguageCell(group.languages, languages.length),
+        ...classes.map((c) => (group.counts[c] === 0 ? '—' : String(group.counts[c]))),
+        group.total === 0 ? '✓ clean' : `**${group.total}**`,
+    ]);
+    return table(headers, rows);
+}
+function renderKeySections(issues, languages, maxRows, options = {}) {
+    const collapsed = options.collapsed ?? true;
+    const sections = [];
+    for (const issueClass of ALL_ISSUE_CLASSES) {
+        const forClass = issues.filter((issue) => issue.class === issueClass);
+        if (forClass.length === 0)
+            continue;
+        const body = STATE_ISSUE_CLASSES.includes(issueClass)
+            ? renderKeyTable(forClass, languages, maxRows)
+            : renderMessageList(forClass, maxRows);
+        sections.push(collapsed
+            ? [
+                `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
+                '',
+                body,
+                '',
+                '</details>',
+            ].join('\n')
+            : [`**${CLASS_LABELS[issueClass]}** · ${forClass.length}`, '', body].join('\n'));
+    }
+    return sections;
+}
+/** Key -> the languages it is missing from, so each key appears once. */
+function renderKeyTable(issues, languages, maxRows) {
+    const rows = new Map();
+    for (const issue of issues) {
+        const id = JSON.stringify([issue.catalog, issue.key]);
+        let row = rows.get(id);
+        if (!row) {
+            row = { catalog: issue.catalog, key: issue.key, languages: [] };
+            rows.set(id, row);
+        }
+        if (issue.language)
+            row.languages.push(issue.language);
+    }
+    const all = [...rows.values()];
+    // Widest blast radius first: a key missing everywhere matters more than one
+    // missing in a single locale.
+    all.sort((a, b) => b.languages.length - a.languages.length || a.key.localeCompare(b.key));
+    const showCatalog = new Set(all.map((r) => r.catalog)).size > 1;
+    const shown = all.slice(0, maxRows);
+    const headers = [...(showCatalog ? ['Catalog'] : []), 'Key', 'Languages'];
+    const body = shown.map((row) => [
+        ...(showCatalog ? [code(row.catalog)] : []),
+        code(row.key),
+        renderLanguageCell(row.languages.sort(), languages.length),
+    ]);
+    const rendered = table(headers, body);
+    return all.length > shown.length
+        ? `${rendered}\n\n_+ ${all.length - shown.length} more keys._`
+        : rendered;
+}
+/** Structural issues carry a specific message, so they read better as a list. */
+function renderMessageList(issues, maxRows) {
+    const shown = issues.slice(0, maxRows);
+    const lines = shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`);
+    if (issues.length > shown.length) {
+        lines.push('', `_+ ${issues.length - shown.length} more._`);
+    }
+    return lines.join('\n');
+}
+
+;// CONCATENATED MODULE: ./src/report/comment.ts
+
+/**
+ * Hidden marker used to find our own comment on re-runs.
+ *
+ * The comment is sticky: we search the PR for this marker and PATCH the comment
+ * that carries it, so a branch with twenty pushes has one comment, not twenty.
+ */
+const COMMENT_MARKER = '<!-- xcstrings-lint -->';
+/** GitHub rejects comment bodies over 65536 characters. Leave headroom. */
+const MAX_COMMENT_LENGTH = 60000;
+const MAX_DETAIL_ROWS = 40;
+/** Warnings are context, not the finding -- show less of them. */
+const MAX_WARNING_ROWS = 20;
+/**
+ * Render the sticky comment.
+ *
+ * Layout is deliberately two-tier. A reviewer opening the PR should learn what
+ * is broken and where in about three seconds -- one headline, one grouped
+ * table -- and everything past that is collapsed until they ask for it. The
+ * detail matters, but not before they know whether it concerns them.
+ */
+function renderComment(input) {
+    const status = input.passed ? '**passed**' : '**failed**';
+    const lines = [`### 🌍 xcstrings-lint — ${status}`, '', headline(input), ''];
+    const summary = renderLanguageTable(input.result.languages, input.errors);
+    if (summary)
+        lines.push(summary, '');
+    for (const section of renderKeySections(input.errors, input.result.languages, MAX_DETAIL_ROWS)) {
+        lines.push(section, '');
+    }
+    // Warnings get a section of their own rather than a bare count. They do not
+    // block the merge, so they stay collapsed and out of the headline -- but a
+    // reviewer who wants to know what else is off should not have to go digging
+    // through the job summary to find out.
+    if (input.warnings.length > 0) {
+        const body = [
+            renderLanguageTable(input.result.languages, input.warnings),
+            ...renderKeySections(input.warnings, input.result.languages, MAX_WARNING_ROWS, {
+                collapsed: false,
+            }),
+        ].filter(Boolean);
+        lines.push(`<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`, '', body.join('\n\n'), '', '</details>', '');
+    }
+    lines.push(footer(input));
+    return truncate(lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd());
+}
+function headline(input) {
+    const shortfalls = input.shortfalls;
+    if (input.errors.length === 0 && shortfalls.length === 0) {
+        return `Every language is fully translated across ${pluralise(input.filesScanned, 'file')}.`;
+    }
+    if (input.errors.length === 0) {
+        return (`**${pluralise(shortfalls.length, 'language')}** below the ${input.threshold}% threshold: ` +
+            shortfalls.map((s) => `\`${s.language}\` at ${s.percent}%`).join(', ') +
+            '.');
+    }
+    const keys = new Set(input.errors.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size;
+    const languages = new Set(input.errors.map((issue) => issue.language).filter(Boolean)).size;
+    return (`**${pluralise(input.errors.length, 'issue')}** — ` +
+        `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
+}
+function footer(input) {
+    const parts = [`${pluralise(input.filesScanned, 'file')} checked`];
+    if (input.warnings.length > 0)
+        parts.push(`${pluralise(input.warnings.length, 'warning')}`);
+    if (input.annotationsDropped) {
+        parts.push(`${input.annotationsDropped} annotations not shown inline — see the job summary`);
+    }
+    return `<sub>${parts.join(' · ')} · ${COMMENT_MARKER}</sub>`;
+}
+/**
+ * Trim an over-long body without losing the marker, which is what makes the
+ * comment sticky -- a truncated body that dropped it would orphan the comment
+ * and post a fresh one on every push.
+ */
+function truncate(body, limit = MAX_COMMENT_LENGTH) {
+    if (body.length <= limit)
+        return body;
+    const notice = '\n\n_Report truncated._\n';
+    const marker = body.endsWith('</sub>') ? `\n<sub>${COMMENT_MARKER}</sub>` : `\n${COMMENT_MARKER}`;
+    const room = limit - notice.length - marker.length;
+    return `${body.slice(0, Math.max(0, room)).trimEnd()}${notice}${marker}`;
+}
+function isOurComment(body) {
+    return typeof body === 'string' && body.includes(COMMENT_MARKER);
+}
+
+;// CONCATENATED MODULE: ./src/action/comment.ts
+
+
+
+/**
+ * Post or update the sticky comment.
+ *
+ * Never fatal. On a pull request from a fork the token is read-only and this
+ * 403s; that is a permissions fact about forks, not a problem with the code
+ * under review, so it degrades to a notice and the annotations and job summary
+ * carry the result. Switching to `pull_request_target` to get a writable token
+ * would run untrusted code with secrets, which is not a trade worth making.
+ */
+async function postComment(body, token) {
+    const context = github_context;
+    const issueNumber = context.payload.pull_request?.number;
+    if (!issueNumber) {
+        info(`no pull request associated with the "${context.eventName}" event; skipping comment`);
+        return;
+    }
+    if (!token) {
+        info('no github-token supplied; skipping comment');
+        return;
+    }
+    try {
+        const octokit = getOctokit(token);
+        const { owner, repo } = context.repo;
+        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+            owner,
+            repo,
+            issue_number: issueNumber,
+            per_page: 100,
+        });
+        const ours = comments.filter((comment) => isOurComment(comment.body));
+        // Prefer one the bot wrote, so a human quoting the marker cannot hijack it.
+        const existing = ours.find((comment) => comment.user?.type === 'Bot') ?? ours[0];
+        if (existing) {
+            await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            core_debug(`updated comment ${existing.id}`);
+        }
+        else {
+            await octokit.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+            core_debug('created a new comment');
+        }
+    }
+    catch (error) {
+        const status = error.status;
+        if (status === 403 || status === 404) {
+            info('Cannot comment on this pull request (the token is read-only, which is normal for ' +
+                'forks). Results are in the annotations and the job summary.');
+            return;
+        }
+        warning(`Could not post the comment: ${error.message}`);
+    }
+}
+
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 // EXTERNAL MODULE: ./node_modules/yaml/dist/index.js
 var dist = __nccwpck_require__(8815);
 // EXTERNAL MODULE: ./node_modules/picomatch/index.js
-var picomatch = __nccwpck_require__(4006);
-var picomatch_default = /*#__PURE__*/__nccwpck_require__.n(picomatch);
+var node_modules_picomatch = __nccwpck_require__(4006);
+var picomatch_default = /*#__PURE__*/__nccwpck_require__.n(node_modules_picomatch);
 ;// CONCATENATED MODULE: ./node_modules/zod/v3/helpers/util.js
 var util;
 (function (util) {
@@ -61654,55 +62077,6 @@ const coerce = {
 
 const NEVER = (/* unused pure expression or super */ null && (INVALID));
 
-;// CONCATENATED MODULE: ./src/core/types.ts
-/**
- * Domain model shared by the parsers, the analyzer and the reporters.
- *
- * Everything here is format-neutral: a `.xcstrings` String Catalog and a set of
- * legacy `.lproj/*.strings` tables both normalise into a `Catalog`, so the
- * analyzer never has to know which one it came from.
- */
-/**
- * A file we could not parse. These are always fatal (exit 2): a `.xcstrings`
- * that is not valid JSON means something upstream is broken, and silently
- * reporting 100% coverage for it would be worse than stopping.
- */
-class CatalogParseError extends Error {
-    file;
-    line;
-    column;
-    constructor(file, message, line, column) {
-        super(message);
-        this.name = 'CatalogParseError';
-        this.file = file;
-        this.line = line;
-        this.column = column;
-    }
-}
-/**
- * Per-(key, language) translation states. These are mutually exclusive: a pair
- * is at most one of them, resolved by `STATE_PRECEDENCE`.
- */
-const STATE_ISSUE_CLASSES = ['missing', 'empty', 'new', 'needsReview', 'stale'];
-/** Structural checks. Orthogonal to the state classes and to each other. */
-const STRUCTURAL_ISSUE_CLASSES = ['formatSpecifier', 'pluralCoverage'];
-const ALL_ISSUE_CLASSES = [
-    ...STATE_ISSUE_CLASSES,
-    ...STRUCTURAL_ISSUE_CLASSES,
-];
-/**
- * Order in which state classes win when a pair qualifies for several -- a unit
- * with `state: "new"` and `value: ""` is both `new` and `empty`. Reporting it
- * twice would triple-count the same miss and make the totals lie.
- */
-const STATE_PRECEDENCE = [
-    'missing',
-    'empty',
-    'new',
-    'needsReview',
-    'stale',
-];
-
 ;// CONCATENATED MODULE: ./src/core/config.ts
 
 
@@ -61732,6 +62106,23 @@ const ALWAYS_IGNORED_FILES = [
 ];
 const DEFAULT_FAIL_ON = ['missing', 'empty', 'new'];
 const DEFAULT_WARN_ON = ['needsReview', 'stale'];
+/**
+ * Severity of each non-state check when the user says nothing.
+ *
+ * `duplicateKeys` fails: a key declared twice means one of the two definitions
+ * is silently discarded by Xcode, so whatever it said is already lost.
+ * `identicalToSource` is off, because "Cancel" is a legitimate translation into
+ * a dozen languages and a check that cries wolf gets the whole tool switched
+ * off. It is one line to enable when a project wants it.
+ */
+const DEFAULT_CHECK_SEVERITY = {
+    formatSpecifier: 'error',
+    pluralCoverage: 'warn',
+    duplicateKey: 'error',
+    duplicateValue: 'warn',
+    orphanKey: 'warn',
+    identicalToSource: 'off',
+};
 const severitySchema = enumType(['error', 'warn', 'off']);
 const stateClassSchema = enumType(['missing', 'empty', 'new', 'needsReview', 'stale']);
 const nonEmptyString = stringType().min(1, 'must not be empty');
@@ -61750,6 +62141,10 @@ const fileSchema = objectType({
         .optional(),
     formatSpecifiers: severitySchema.optional(),
     pluralCoverage: severitySchema.optional(),
+    duplicateKeys: severitySchema.optional(),
+    duplicateValues: severitySchema.optional(),
+    orphanKeys: severitySchema.optional(),
+    identicalToSource: severitySchema.optional(),
 })
     .strict();
 function defaultConfig() {
@@ -61810,6 +62205,15 @@ function parseConfig(text, path = DEFAULT_CONFIG_PATH) {
     }
     return { ...resolve(config), source: path };
 }
+/** Options that are configured at the top level, not inside failOn/warnOn. */
+const TOP_LEVEL_CHECKS = [
+    'formatSpecifiers',
+    'pluralCoverage',
+    'duplicateKeys',
+    'duplicateValues',
+    'orphanKeys',
+    'identicalToSource',
+];
 function formatIssues(path, error) {
     const lines = error.issues.map((issue) => {
         const where = issue.path.length > 0 ? issue.path.join('.') : '(root)';
@@ -61818,7 +62222,7 @@ function formatIssues(path, error) {
         if ((where.startsWith('failOn') || where.startsWith('warnOn')) &&
             issue.code === 'invalid_enum_value') {
             const received = String(issue.received ?? '');
-            if (received === 'formatSpecifiers' || received === 'pluralCoverage') {
+            if (TOP_LEVEL_CHECKS.includes(received)) {
                 message = `"${received}" is configured with the top-level "${received}:" option, not in ${where.split('.')[0]}`;
             }
         }
@@ -61838,8 +62242,12 @@ function resolve(config) {
         else if (warnOn.includes(issueClass))
             severity[issueClass] = 'warn';
     }
-    severity.formatSpecifier = config.formatSpecifiers ?? 'error';
-    severity.pluralCoverage = config.pluralCoverage ?? 'warn';
+    severity.formatSpecifier = config.formatSpecifiers ?? DEFAULT_CHECK_SEVERITY.formatSpecifier;
+    severity.pluralCoverage = config.pluralCoverage ?? DEFAULT_CHECK_SEVERITY.pluralCoverage;
+    severity.duplicateKey = config.duplicateKeys ?? DEFAULT_CHECK_SEVERITY.duplicateKey;
+    severity.duplicateValue = config.duplicateValues ?? DEFAULT_CHECK_SEVERITY.duplicateValue;
+    severity.orphanKey = config.orphanKeys ?? DEFAULT_CHECK_SEVERITY.orphanKey;
+    severity.identicalToSource = config.identicalToSource ?? DEFAULT_CHECK_SEVERITY.identicalToSource;
     return {
         paths: config.paths ?? DEFAULT_PATHS,
         ...(config.sourceLanguage === undefined ? {} : { sourceLanguage: config.sourceLanguage }),
@@ -61869,124 +62277,69 @@ function createIgnoreMatchers(config) {
     };
 }
 function createPathMatcher(config) {
-    const include = picomatch_default()(config.paths, { dot: true });
+    const include = picomatch(config.paths, { dot: true });
     const { ignoresFile } = createIgnoreMatchers(config);
     return (path) => include(path) && !ignoresFile(path);
 }
 
-;// CONCATENATED MODULE: external "node:child_process"
-const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
-;// CONCATENATED MODULE: ./src/core/cldr-plurals.ts
+;// CONCATENATED MODULE: ./src/action/inputs.ts
+
 /**
- * CLDR cardinal plural categories, as a static table.
+ * Read and validate every input up front.
  *
- * A translation that only supplies `one` and `other` is grammatically wrong in
- * Polish (which needs `few` and `many`) and redundant in Japanese (which needs
- * only `other`). Xcode's String Catalog editor shows exactly these categories
- * per language, so this table is what makes our plural check agree with what a
- * developer sees in Xcode.
+ * All of it is pure, so the validation rules can be tested without a runner,
+ * and every failure lands on the same "you configured this wrong" path (exit 2)
+ * rather than surfacing as a stack trace halfway through a run.
+ */
+function readInputs(get) {
+    const configPath = (get('config') || '').trim() || DEFAULT_CONFIG_PATH;
+    const mode = (get('mode') || '').trim();
+    return {
+        configPath,
+        // The default path is allowed to be absent -- zero-config is supported.
+        configExplicit: configPath !== DEFAULT_CONFIG_PATH,
+        threshold: readThreshold(get),
+        comment: readBoolean(get, 'comment', true),
+        annotations: readBoolean(get, 'annotations', true),
+        fail: readBoolean(get, 'fail', true),
+        ...(mode === '' ? {} : { removedMode: mode }),
+    };
+}
+/**
+ * Read a boolean input, falling back rather than throwing when it is absent.
  *
- * Deliberately hand-maintained rather than pulled from a package: it is ~60
- * lines of data that changes roughly never, and a CLDR dependency would be
- * megabytes in the ncc bundle for this one lookup.
+ * `core.getBooleanInput` throws on an empty value. Action defaults mean that
+ * normally cannot happen, but a hard crash on a missing input is a poor trade
+ * for a check whose whole job is to produce a readable failure.
  */
-/** Every language shares `other`; the sets below list the full requirement. */
-const CATEGORY_SETS = [
-    {
-        categories: ['other'],
-        languages: [
-            'bo', 'dz', 'id', 'ig', 'ii', 'ja', 'jbo', 'jv', 'jw', 'kde', 'kea', 'km',
-            'ko', 'lkt', 'lo', 'ms', 'my', 'nqo', 'root', 'sah', 'ses', 'sg', 'su',
-            'th', 'to', 'vi', 'wo', 'yo', 'yue', 'zh',
-        ],
-    },
-    {
-        categories: ['one', 'other'],
-        languages: [
-            'af', 'am', 'an', 'as', 'ast', 'az', 'bg', 'bn', 'brx', 'ce', 'chr',
-            'ckb', 'da', 'de', 'dv', 'ee', 'el', 'en', 'eo', 'et', 'eu', 'fa', 'fi',
-            'fil', 'fo', 'fur', 'fy', 'gsw', 'gu', 'ha', 'haw', 'hi', 'hu', 'hy',
-            'ia', 'io', 'is', 'jgo', 'jmc', 'ka', 'kaj', 'kcg', 'kk', 'kkj', 'kl',
-            'kn', 'ks', 'ksb', 'ku', 'ky', 'lb', 'lg', 'mas', 'mgo', 'ml', 'mn',
-            'mr', 'nah', 'nb', 'nd', 'ne', 'nl', 'nn', 'nnh', 'no', 'nr', 'ny',
-            'nyn', 'om', 'or', 'os', 'pa', 'pap', 'ps', 'rm', 'rof', 'rwk', 'saq',
-            'sd', 'sdh', 'seh', 'sn', 'so', 'sq', 'ss', 'ssy', 'st', 'sv', 'sw',
-            'syr', 'ta', 'te', 'teo', 'tig', 'tk', 'tn', 'tr', 'ts', 'ug', 'ur',
-            'uz', 've', 'vo', 'vun', 'wae', 'xh', 'xog', 'yi', 'zu',
-        ],
-    },
-    {
-        // CLDR added `many` for the Romance languages to cover compact forms such
-        // as "1 million". Xcode surfaces it, so we do too -- as a warning.
-        categories: ['one', 'many', 'other'],
-        languages: ['ca', 'es', 'fr', 'it', 'pt'],
-    },
-    {
-        categories: ['one', 'two', 'other'],
-        languages: ['he', 'iw'],
-    },
-    {
-        categories: ['zero', 'one', 'other'],
-        languages: ['lv', 'prg'],
-    },
-    {
-        categories: ['one', 'few', 'other'],
-        languages: ['bs', 'hr', 'mo', 'ro', 'sh', 'sr'],
-    },
-    {
-        categories: ['one', 'few', 'many', 'other'],
-        languages: ['be', 'cs', 'lt', 'pl', 'ru', 'sk', 'uk'],
-    },
-    {
-        categories: ['one', 'two', 'few', 'other'],
-        languages: ['dsb', 'gd', 'hsb', 'sl'],
-    },
-    {
-        categories: ['one', 'two', 'few', 'many', 'other'],
-        languages: ['br', 'ga', 'mt'],
-    },
-    {
-        categories: ['zero', 'one', 'two', 'few', 'many', 'other'],
-        languages: ['ar', 'ars', 'cy', 'kw'],
-    },
-];
-const TABLE = new Map();
-for (const { categories, languages } of CATEGORY_SETS) {
-    for (const language of languages)
-        TABLE.set(language, categories);
+function readBoolean(get, name, fallback) {
+    const raw = (get(name) || '').trim();
+    if (raw === '')
+        return fallback;
+    if (['true', 'True', 'TRUE'].includes(raw))
+        return true;
+    if (['false', 'False', 'FALSE'].includes(raw))
+        return false;
+    throw new ConfigError(`${name} must be true or false, got "${raw}"`);
 }
-/**
- * Overrides for locales whose plural rules differ from their base language.
- * Empty today -- every region variant Xcode emits (`pt-BR`, `pt-PT`, `zh-Hans`,
- * `es-419`, `en-GB`, `fr-CA`) shares its base language's categories -- but the
- * hook is here so a future divergence is a one-line change.
- */
-const LOCALE_OVERRIDES = new Map();
-/** `pt-BR` -> `pt`, `zh_Hans` -> `zh`. */
-function baseLanguage(locale) {
-    return (locale.split(/[-_]/)[0] ?? locale).toLowerCase();
+function readThreshold(get) {
+    const raw = (get('threshold') || '').trim() || '100';
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+        throw new ConfigError(`threshold must be a number between 0 and 100, got "${raw}"`);
+    }
+    return value;
 }
-function requiredPluralCategories(locale) {
-    const normalized = locale.replace(/_/g, '-');
-    const override = LOCALE_OVERRIDES.get(normalized) ?? LOCALE_OVERRIDES.get(normalized.toLowerCase());
-    if (override)
-        return { categories: override, known: true };
-    const categories = TABLE.get(baseLanguage(locale));
-    if (categories)
-        return { categories, known: true };
-    return { categories: ['one', 'other'], known: false };
-}
-/**
- * Categories required but not supplied. `other` is always required; extra
- * categories beyond the requirement are harmless and never reported.
- */
-function missingPluralCategories(locale, supplied) {
-    const { categories, known } = requiredPluralCategories(locale);
-    const have = new Set(supplied);
-    return { missing: categories.filter((category) => !have.has(category)), known };
+/** Told to the user once when a v1 workflow still sets `mode`. */
+function removedModeNotice(mode) {
+    return (`The "mode" input was removed in v2 and "${mode}" is being ignored. ` +
+        'Every run now checks the whole repository; there is no base-branch comparison. ' +
+        'Delete the line from your workflow.');
 }
 
-;// CONCATENATED MODULE: ./src/core/format-specifiers.ts
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+;// CONCATENATED MODULE: ./src/core/parse/format-specifiers.ts
 /**
  * Format-specifier parsing and comparison.
  *
@@ -62256,7 +62609,7 @@ function compareFormatSpecifiers(source, target, options = {}) {
     return mismatches;
 }
 
-;// CONCATENATED MODULE: ./src/core/value-node.ts
+;// CONCATENATED MODULE: ./src/core/parse/value-node.ts
 /**
  * Flatten a value tree into its leaves.
  *
@@ -62307,116 +62660,60 @@ function findVariationGroups(node, kind) {
     return out;
 }
 
-;// CONCATENATED MODULE: ./src/core/analyze.ts
+;// CONCATENATED MODULE: ./src/core/assess.ts
 
 
 
-
-
-function analyze(catalogs, config, options = {}) {
-    const { ignoresKey, ignoresFile } = createIgnoreMatchers(config);
-    const inScope = catalogs.filter((catalog) => !ignoresFile(catalog.path));
-    const sourceLanguages = new Set(inScope.map((catalog) => config.sourceLanguage ?? catalog.sourceLanguage));
-    // Default is every language found anywhere, not per-catalog: a module that is
-    // simply absent from one locale is exactly the gap worth surfacing.
-    const discovered = new Set();
-    for (const catalog of inScope)
-        for (const language of catalog.languages)
-            discovered.add(language);
-    const candidates = config.required ?? options.languages ?? [...discovered];
-    const issues = [];
-    const tally = new Map();
-    for (const catalog of inScope) {
-        const sourceLanguage = config.sourceLanguage ?? catalog.sourceLanguage;
-        const targets = candidates.filter((language) => language !== sourceLanguage).sort();
-        for (const entry of catalog.entries) {
-            if (!entry.shouldTranslate || ignoresKey(entry.key))
-                continue;
-            if (entry.extractionState === 'stale') {
-                push(issues, config, {
-                    class: 'stale',
-                    catalog: catalog.path,
-                    key: entry.key,
-                    loc: entry.loc,
-                    message: `"${entry.key}" is no longer referenced in source (extractionState: stale)`,
-                });
-            }
-            const source = sourceReference(entry, sourceLanguage);
-            for (const language of targets) {
-                const assessment = assess(entry, language, source.leaves);
-                const counts = tally.get(language) ?? { translatable: 0, translated: 0 };
-                counts.translatable++;
-                if (assessment.complete)
-                    counts.translated++;
-                tally.set(language, counts);
-                if (assessment.stateClass) {
-                    push(issues, config, {
-                        class: assessment.stateClass,
-                        catalog: catalog.path,
-                        key: entry.key,
-                        language,
-                        loc: assessment.loc,
-                        message: stateMessage(assessment.stateClass, language, assessment.detail),
-                        ...(assessment.detail === undefined ? {} : { detail: assessment.detail }),
-                    });
-                }
-            }
-            // Structural checks run against every language present, source included:
-            // an English plural that only supplies `other` is wrong too.
-            const checked = new Set([...targets, sourceLanguage]);
-            for (const [language, localization] of Object.entries(entry.localizations)) {
-                if (!checked.has(language))
-                    continue;
-                if (config.severity.formatSpecifier !== 'off' && source.reliable && language !== sourceLanguage) {
-                    checkFormatSpecifiers(issues, config, catalog, entry, language, localization, source);
-                }
-                if (config.severity.pluralCoverage !== 'off') {
-                    checkPluralCoverage(issues, config, catalog, entry, language, localization);
-                }
-            }
-        }
+function assessCatalog(catalog, options) {
+    const { sourceLanguage, ignoresKey } = options;
+    const targets = options.targets.filter((language) => language !== sourceLanguage).sort();
+    const entries = [];
+    for (const entry of catalog.entries) {
+        if (!entry.shouldTranslate || ignoresKey(entry.key))
+            continue;
+        const source = sourceReference(entry, sourceLanguage);
+        entries.push({
+            entry,
+            source,
+            pairs: targets.map((language) => assessPair(entry, language, source.leaves)),
+        });
     }
-    const coverage = {};
-    for (const [language, counts] of tally) {
-        coverage[language] = {
-            language,
-            translatable: counts.translatable,
-            translated: counts.translated,
-            percent: counts.translatable === 0
-                ? 100
-                : Math.round((counts.translated / counts.translatable) * 1000) / 10,
-        };
-    }
-    return {
-        catalogs: inScope,
-        issues: sortIssues(issues),
-        coverage,
-        languages: [...tally.keys()].sort(),
-    };
+    return { catalog, sourceLanguage, targets, entries };
 }
-function assess(entry, language, sourceLeaves) {
+/** Every concrete string in a localization, substitution branches included. */
+function localizationLeaves(entry, language) {
+    const localization = entry.localizations[language];
+    if (!localization)
+        return [];
+    return [
+        ...collectLeaves(localization),
+        ...Object.values(localization.substitutions ?? {}).flatMap((s) => collectLeaves(s)),
+    ];
+}
+function assessPair(entry, language, sourceLeaves) {
     const localization = entry.localizations[language];
     if (!localization) {
-        return { stateClass: 'missing', loc: entry.loc, complete: false };
+        return { language, stateClass: 'missing', loc: entry.loc, complete: false, leaves: [] };
     }
-    const leaves = collectLeaves(localization);
-    const substitutionLeaves = Object.values(localization.substitutions ?? {}).flatMap((s) => collectLeaves(s));
-    const all = [...leaves, ...substitutionLeaves];
+    const direct = collectLeaves(localization);
+    const all = localizationLeaves(entry, language);
     if (all.length === 0) {
-        return { stateClass: 'missing', loc: localization.loc, complete: false };
+        return { language, stateClass: 'missing', loc: localization.loc, complete: false, leaves: [] };
     }
     // Every branch the source defines must exist in the target. A German string
     // that covers `device.iphone` but not `device.ipad` is half-translated.
-    const present = new Set(leaves.map((leaf) => leafPathLabel(leaf.path)));
+    const present = new Set(direct.map((leaf) => leafPathLabel(leaf.path)));
     const absent = sourceLeaves
         .map((leaf) => leafPathLabel(leaf.path))
         .filter((label) => label !== '' && !present.has(label));
     if (absent.length > 0) {
         return {
+            language,
             stateClass: 'missing',
             detail: `missing ${absent.join(', ')}`,
             loc: localization.loc,
             complete: false,
+            leaves: all,
         };
     }
     const candidates = [];
@@ -62440,28 +62737,36 @@ function assess(entry, language, sourceLeaves) {
     // the same call Xcode's own completion percentage makes.
     const complete = winner === undefined || (winner.class !== 'empty' && winner.class !== 'new');
     if (!winner)
-        return { loc: localization.loc, complete };
+        return { language, loc: localization.loc, complete, leaves: all };
     return {
+        language,
         stateClass: winner.class,
         ...(winner.detail === undefined ? {} : { detail: winner.detail }),
         loc: winner.loc,
         complete,
+        leaves: all,
     };
 }
-function stateMessage(stateClass, language, detail) {
-    const where = detail ? ` (${detail})` : '';
-    switch (stateClass) {
-        case 'missing':
-            return `no ${language} translation${where}`;
-        case 'empty':
-            return `${language} translation is empty${where}`;
-        case 'new':
-            return `${language} is marked new -- extracted but not translated${where}`;
-        case 'needsReview':
-            return `${language} is marked needs_review${where}`;
-        case 'stale':
-            return `${language} is marked stale${where}`;
+/**
+ * Pick the source string a given target leaf should be compared against.
+ *
+ * Polish `few` has no English counterpart, but every branch of a plural group
+ * carries the same arguments, so falling back to the source's `other` branch is
+ * both safe and necessary to check expanded plurals at all.
+ */
+function referenceLeafFor(sourceLeaves, targetPath) {
+    const label = leafPathLabel(targetPath);
+    const exact = sourceLeaves.find((leaf) => leafPathLabel(leaf.path) === label);
+    if (exact)
+        return exact;
+    const last = targetPath[targetPath.length - 1];
+    if (last?.kind === 'plural') {
+        const sibling = leafPathLabel([...targetPath.slice(0, -1), { kind: 'plural', branch: 'other' }]);
+        const match = sourceLeaves.find((leaf) => leafPathLabel(leaf.path) === sibling);
+        if (match)
+            return match;
     }
+    return sourceLeaves[0];
 }
 /**
  * Work out the source string for an entry.
@@ -62482,104 +62787,671 @@ function sourceReference(entry, sourceLanguage) {
                 leaves,
                 substitutions: localization.substitutions,
                 reliable: true,
+                explicit: true,
             };
         }
     }
     if (parseFormatSpecifiers(entry.key).length > 0) {
         return {
-            leaves: [
-                { path: [], unit: { state: 'translated', value: entry.key }, loc: entry.loc },
-            ],
+            leaves: [{ path: [], unit: { state: 'translated', value: entry.key }, loc: entry.loc }],
             substitutions: undefined,
             reliable: true,
+            explicit: false,
         };
     }
-    return { leaves: [], substitutions: undefined, reliable: false };
+    return { leaves: [], substitutions: undefined, reliable: false, explicit: false };
 }
+
+;// CONCATENATED MODULE: ./src/core/coverage.ts
 /**
- * Pick the source string a given target leaf should be compared against.
+ * Translated share per language, and the gate that compares it to a threshold.
  *
- * Polish `few` has no English counterpart, but every branch of a plural group
- * carries the same arguments, so falling back to the source's `other` branch is
- * both safe and necessary to check expanded plurals at all.
+ * Two rules run this file, and both exist because of the same failure: a
+ * percentage that says 100 when the catalog is not complete.
+ *
+ * 1. The percentage rounds *down*. 2999 of 3000 strings is 99.9666...%, and
+ *    rounding that to the nearest tenth gives 100.0 -- a number no reader can
+ *    distinguish from a finished translation.
+ * 2. The gate never looks at the percentage at all. It compares the counts, so
+ *    `threshold: 100` means "every string", not "a figure that rounds to 100".
  */
-function referenceFor(sourceLeaves, targetPath) {
-    const label = leafPathLabel(targetPath);
-    const exact = sourceLeaves.find((leaf) => leafPathLabel(leaf.path) === label);
-    if (exact)
-        return exact;
-    if (targetPath.length > 0) {
-        const last = targetPath[targetPath.length - 1];
-        if (last?.kind === 'plural') {
-            const sibling = leafPathLabel([...targetPath.slice(0, -1), { kind: 'plural', branch: 'other' }]);
-            const match = sourceLeaves.find((leaf) => leafPathLabel(leaf.path) === sibling);
-            if (match)
-                return match;
+function computeCoverage(assessments) {
+    const tally = new Map();
+    for (const assessment of assessments) {
+        for (const language of assessment.targets) {
+            if (!tally.has(language))
+                tally.set(language, { translatable: 0, translated: 0 });
+        }
+        for (const { pairs } of assessment.entries) {
+            for (const pair of pairs) {
+                const counts = tally.get(pair.language);
+                if (!counts)
+                    continue;
+                counts.translatable++;
+                if (pair.complete)
+                    counts.translated++;
+            }
         }
     }
-    return sourceLeaves[0];
+    const coverage = {};
+    for (const [language, counts] of tally) {
+        coverage[language] = {
+            language,
+            translatable: counts.translatable,
+            translated: counts.translated,
+            percent: percentOf(counts.translated, counts.translatable),
+        };
+    }
+    return coverage;
 }
-function checkFormatSpecifiers(issues, config, catalog, entry, language, localization, source) {
-    const targets = [
-        ...collectLeaves(localization),
-        ...Object.values(localization.substitutions ?? {}).flatMap((s) => collectLeaves(s)),
-    ];
-    for (const leaf of targets) {
-        if (leaf.unit.value === '')
+/** 0-100 to one decimal, rounded down. 100 only when nothing is outstanding. */
+function percentOf(translated, translatable) {
+    if (translatable === 0)
+        return 100;
+    if (translated >= translatable)
+        return 100;
+    return Math.floor((translated / translatable) * 1000) / 10;
+}
+/** Languages that do not reach the threshold. */
+function belowThreshold(coverage, threshold, options = {}) {
+    const sourceLanguages = new Set(options.sourceLanguages ?? []);
+    const languages = options.required ?? Object.keys(coverage);
+    const shortfalls = [];
+    for (const language of languages) {
+        const entry = coverage[language];
+        if (!entry) {
+            // Never assessed. Either it is the source language -- in which case there
+            // is nothing to translate and nothing to report -- or the user named a
+            // language no catalog has, which is worth saying out loud.
+            if (sourceLanguages.has(language))
+                continue;
+            shortfalls.push({ language, percent: 0, threshold, translatable: 0, translated: 0 });
             continue;
-        const reference = referenceFor(source.leaves, leaf.path);
-        if (!reference)
+        }
+        // Counts, not the rounded percentage. See the note at the top of the file.
+        const meets = entry.translatable === 0 || (entry.translated / entry.translatable) * 100 >= threshold;
+        if (meets)
             continue;
-        const mismatches = compareFormatSpecifiers(reference.unit.value, leaf.unit.value, {
-            sourceSubstitutions: source.substitutions,
-            targetSubstitutions: localization.substitutions,
+        shortfalls.push({
+            language,
+            percent: entry.percent,
+            threshold,
+            translatable: entry.translatable,
+            translated: entry.translated,
         });
-        for (const mismatch of mismatches) {
-            const where = leaf.path.length > 0 ? ` [${leafPathLabel(leaf.path)}]` : '';
-            push(issues, config, {
-                class: 'formatSpecifier',
-                catalog: catalog.path,
-                key: entry.key,
-                language,
-                loc: leaf.loc,
-                message: `${language}${where}: ${mismatch.message}`,
-                detail: `source: ${reference.unit.value}`,
-                // A width change is a bug but not a crash, so it never escalates past
-                // a warning even when formatSpecifiers is set to error.
-                ...(mismatch.severity === 'warn' ? { forceWarn: true } : {}),
+    }
+    return shortfalls.sort((a, b) => a.percent - b.percent || a.language.localeCompare(b.language));
+}
+
+;// CONCATENATED MODULE: ./src/core/rules/duplicates.ts
+
+/**
+ * The same key declared twice in one file.
+ *
+ * Both formats resolve this silently -- JSON is last-wins and so is a legacy
+ * table -- which is precisely what makes it worth reporting. Whatever the first
+ * declaration said has already been discarded, and nothing in Xcode will tell
+ * you. It usually happens on a bad merge, and the string that lost is normally
+ * the one somebody just translated.
+ */
+const duplicateKeyRule = {
+    name: 'duplicate-keys',
+    classes: ['duplicateKey'],
+    run({ assessment, ignoresKey, report }) {
+        for (const duplicate of assessment.catalog.duplicateKeys) {
+            if (ignoresKey(duplicate.key))
+                continue;
+            const where = duplicate.language ? `${duplicate.language}: ` : '';
+            report({
+                class: 'duplicateKey',
+                key: duplicate.key,
+                ...(duplicate.language === undefined ? {} : { language: duplicate.language }),
+                loc: duplicate.loc,
+                message: `${where}"${duplicate.key}" is declared more than once; ` +
+                    `the declaration on line ${duplicate.firstLoc.line} is silently discarded`,
+                detail: `first declared at ${duplicate.firstLoc.file}:${duplicate.firstLoc.line}`,
             });
         }
-    }
+    },
+};
+/**
+ * Two different keys with the same source string.
+ *
+ * Almost always a copy-paste that should have been one key, and it costs real
+ * money: every duplicate is paid for and reviewed twice in every language. It
+ * is a warning rather than an error because the same English word genuinely
+ * does need two keys sometimes -- "Order" the noun and "Order" the verb
+ * translate differently -- and only the person who wrote it can tell.
+ */
+const duplicateValueRule = {
+    name: 'duplicate-values',
+    classes: ['duplicateValue'],
+    run({ assessment, report }) {
+        const seen = new Map();
+        for (const { entry, source } of assessment.entries) {
+            // Only compare real source strings. When the key *is* the source text,
+            // two distinct keys are two distinct strings by definition.
+            if (!source.explicit)
+                continue;
+            const signature = valueSignature(source.leaves);
+            if (signature === undefined)
+                continue;
+            const first = seen.get(signature);
+            if (!first) {
+                seen.set(signature, { key: entry.key, line: entry.loc.line });
+                continue;
+            }
+            report({
+                class: 'duplicateValue',
+                key: entry.key,
+                loc: entry.loc,
+                message: `"${entry.key}" has the same source text as "${first.key}"`,
+                detail: `${preview(source.leaves)} — also on line ${first.line}`,
+            });
+        }
+    },
+};
+/**
+ * A stable identity for what an entry says in the source language.
+ *
+ * Path-qualified so a plural is only equal to a plural that says the same thing
+ * in every branch, and sorted so branch order cannot make two identical
+ * entries look different. Undefined when there is nothing worth comparing.
+ */
+function valueSignature(leaves) {
+    const parts = leaves
+        .filter((leaf) => leaf.unit.value !== '')
+        .map((leaf) => [leafPathLabel(leaf.path), leaf.unit.value])
+        .sort((a, b) => (a[0] ?? '').localeCompare(b[0] ?? ''));
+    // JSON-encoded so no branch label can run into the value beside it and make
+    // two different entries collide on one signature.
+    return parts.length === 0 ? undefined : JSON.stringify(parts);
 }
-function checkPluralCoverage(issues, config, catalog, entry, language, localization) {
-    const groups = [
+const MAX_PREVIEW = 60;
+function preview(leaves) {
+    const value = leaves.find((leaf) => leaf.unit.value !== '')?.unit.value ?? '';
+    const single = value.replace(/\s+/g, ' ').trim();
+    return single.length > MAX_PREVIEW ? `"${single.slice(0, MAX_PREVIEW - 1)}…"` : `"${single}"`;
+}
+
+;// CONCATENATED MODULE: ./src/core/rules/format-specifiers.ts
+
+
+
+/**
+ * The highest-value check in the tool.
+ *
+ * A missing translation shows the wrong language. A specifier mismatch between
+ * `"You have %lld items"` and `"Sie haben %@ Artikel"` reads a 64-bit integer
+ * as an object pointer and crashes at runtime.
+ */
+const formatSpecifierRule = {
+    name: 'format-specifiers',
+    classes: ['formatSpecifier'],
+    run({ assessment, report }) {
+        for (const { entry, source, pairs } of assessment.entries) {
+            // Without a source string there is nothing to compare against, and
+            // guessing one invents a mismatch for every key that is an identifier
+            // rather than a sentence.
+            if (!source.reliable)
+                continue;
+            for (const pair of pairs) {
+                const substitutions = entry.localizations[pair.language]?.substitutions;
+                for (const leaf of pair.leaves) {
+                    if (leaf.unit.value === '')
+                        continue;
+                    const reference = referenceLeafFor(source.leaves, leaf.path);
+                    if (!reference)
+                        continue;
+                    const mismatches = compareFormatSpecifiers(reference.unit.value, leaf.unit.value, {
+                        sourceSubstitutions: source.substitutions,
+                        targetSubstitutions: substitutions,
+                    });
+                    for (const mismatch of mismatches) {
+                        const where = leaf.path.length > 0 ? ` [${leafPathLabel(leaf.path)}]` : '';
+                        report({
+                            class: 'formatSpecifier',
+                            key: entry.key,
+                            language: pair.language,
+                            loc: leaf.loc,
+                            message: `${pair.language}${where}: ${mismatch.message}`,
+                            detail: `source: ${reference.unit.value}`,
+                            // A width change is a bug but not a crash, so it never escalates
+                            // past a warning even when formatSpecifiers is set to error.
+                            ...(mismatch.severity === 'warn' ? { forceWarn: true } : {}),
+                        });
+                    }
+                }
+            }
+        }
+    },
+};
+
+;// CONCATENATED MODULE: ./src/core/rules/identical-to-source.ts
+
+
+/**
+ * A translation byte-identical to the source string.
+ *
+ * Usually a placeholder somebody pasted and never came back to: the state says
+ * `translated`, the coverage figure says 100%, and the app ships English to
+ * German users. Xcode cannot tell the difference either.
+ *
+ * Off by default, and deliberately so. "Cancel", "OK", "Email", "Wi-Fi" and
+ * every product name in the catalog are legitimately identical in a dozen
+ * languages, and a check that fires on those is a check people switch off
+ * within a day. Projects that keep their proper nouns in `ignore.keys` get real
+ * value from turning it on; the rest should not have it forced on them.
+ */
+const identicalToSourceRule = {
+    name: 'identical-to-source',
+    classes: ['identicalToSource'],
+    run({ assessment, report }) {
+        for (const { entry, source, pairs } of assessment.entries) {
+            // Comparing against a key that only looks like a source string would
+            // flag every literal-key catalog in its entirety.
+            if (!source.explicit)
+                continue;
+            for (const pair of pairs) {
+                // Nothing to compare: the assessment already reported it as absent.
+                if (pair.stateClass === 'missing')
+                    continue;
+                for (const leaf of pair.leaves) {
+                    if (leaf.unit.value === '')
+                        continue;
+                    const reference = referenceLeafFor(source.leaves, leaf.path);
+                    if (!reference || reference.unit.value !== leaf.unit.value)
+                        continue;
+                    const where = leaf.path.length > 0 ? ` [${leafPathLabel(leaf.path)}]` : '';
+                    report({
+                        class: 'identicalToSource',
+                        key: entry.key,
+                        language: pair.language,
+                        loc: leaf.loc,
+                        message: `${pair.language}${where} is identical to the ${assessment.sourceLanguage} source string`,
+                        detail: `both say ${JSON.stringify(leaf.unit.value)}`,
+                    });
+                }
+            }
+        }
+    },
+};
+
+;// CONCATENATED MODULE: ./src/core/rules/orphan-keys.ts
+/**
+ * A key that exists only in translations.
+ *
+ * Somebody deleted the English string and left eight locales holding a
+ * translation of it, or renamed a key in the source table and not in the
+ * others. Either way the key can never be looked up at runtime, and every
+ * translator who touches the file will translate it again.
+ *
+ * The two formats need different evidence, because "no source-language entry"
+ * means different things in each:
+ *
+ * - **Legacy tables** declare every key explicitly in every `.lproj` file, so a
+ *   key absent from the source language's file is unambiguous.
+ * - **String Catalogs** routinely have no source-language block at all, because
+ *   with literal keys the key *is* the English text. Reporting those would mean
+ *   flagging every well-formed catalog in the world, so the check only fires
+ *   for keys that clearly are not source text themselves.
+ */
+const orphanKeyRule = {
+    name: 'orphan-keys',
+    classes: ['orphanKey'],
+    run({ assessment, report }) {
+        const { sourceLanguage, catalog } = assessment;
+        for (const { entry, source } of assessment.entries) {
+            if (source.explicit)
+                continue;
+            // Xcode has already told us this key is dead; the `stale` check reports
+            // it, and saying it twice in different words helps nobody.
+            if (entry.extractionState === 'stale')
+                continue;
+            if (!looksLikeAnIdentifier(entry, catalog.format))
+                continue;
+            const translated = translatedLanguages(entry, sourceLanguage);
+            if (translated.length === 0)
+                continue;
+            report({
+                class: 'orphanKey',
+                key: entry.key,
+                loc: entry.loc,
+                message: `"${entry.key}" has no ${sourceLanguage} source string, ` +
+                    `but is translated into ${translated.join(', ')}`,
+                detail: 'the source string was probably renamed or deleted',
+            });
+        }
+    },
+};
+function translatedLanguages(entry, sourceLanguage) {
+    return Object.keys(entry.localizations)
+        .filter((language) => language !== sourceLanguage)
+        .sort();
+}
+/**
+ * Whether the key is an identifier rather than the source string itself.
+ *
+ * `payment_cvv_hint` is an identifier and needs an English string somewhere.
+ * `"You have %lld unread"` is the English string, and asking for another copy
+ * of it would be nonsense.
+ */
+function looksLikeAnIdentifier(entry, format) {
+    if (format !== 'xcstrings')
+        return true;
+    // Xcode writes this state when it pulled the key straight out of source code
+    // with the key as its value, which settles the question outright.
+    if (entry.extractionState === 'extracted_with_value')
+        return false;
+    return !/\s/.test(entry.key);
+}
+
+;// CONCATENATED MODULE: ./src/core/cldr-plurals.ts
+/**
+ * CLDR cardinal plural categories, as a static table.
+ *
+ * A translation that only supplies `one` and `other` is grammatically wrong in
+ * Polish (which needs `few` and `many`) and redundant in Japanese (which needs
+ * only `other`). Xcode's String Catalog editor shows exactly these categories
+ * per language, so this table is what makes our plural check agree with what a
+ * developer sees in Xcode.
+ *
+ * Deliberately hand-maintained rather than pulled from a package: it is ~60
+ * lines of data that changes roughly never, and a CLDR dependency would be
+ * megabytes in the ncc bundle for this one lookup.
+ */
+/** Every language shares `other`; the sets below list the full requirement. */
+const CATEGORY_SETS = [
+    {
+        categories: ['other'],
+        languages: [
+            'bo', 'dz', 'id', 'ig', 'ii', 'ja', 'jbo', 'jv', 'jw', 'kde', 'kea', 'km',
+            'ko', 'lkt', 'lo', 'ms', 'my', 'nqo', 'root', 'sah', 'ses', 'sg', 'su',
+            'th', 'to', 'vi', 'wo', 'yo', 'yue', 'zh',
+        ],
+    },
+    {
+        categories: ['one', 'other'],
+        languages: [
+            'af', 'am', 'an', 'as', 'ast', 'az', 'bg', 'bn', 'brx', 'ce', 'chr',
+            'ckb', 'da', 'de', 'dv', 'ee', 'el', 'en', 'eo', 'et', 'eu', 'fa', 'fi',
+            'fil', 'fo', 'fur', 'fy', 'gsw', 'gu', 'ha', 'haw', 'hi', 'hu', 'hy',
+            'ia', 'io', 'is', 'jgo', 'jmc', 'ka', 'kaj', 'kcg', 'kk', 'kkj', 'kl',
+            'kn', 'ks', 'ksb', 'ku', 'ky', 'lb', 'lg', 'mas', 'mgo', 'ml', 'mn',
+            'mr', 'nah', 'nb', 'nd', 'ne', 'nl', 'nn', 'nnh', 'no', 'nr', 'ny',
+            'nyn', 'om', 'or', 'os', 'pa', 'pap', 'ps', 'rm', 'rof', 'rwk', 'saq',
+            'sd', 'sdh', 'seh', 'sn', 'so', 'sq', 'ss', 'ssy', 'st', 'sv', 'sw',
+            'syr', 'ta', 'te', 'teo', 'tig', 'tk', 'tn', 'tr', 'ts', 'ug', 'ur',
+            'uz', 've', 'vo', 'vun', 'wae', 'xh', 'xog', 'yi', 'zu',
+        ],
+    },
+    {
+        // CLDR added `many` for the Romance languages to cover compact forms such
+        // as "1 million". Xcode surfaces it, so we do too -- as a warning.
+        categories: ['one', 'many', 'other'],
+        languages: ['ca', 'es', 'fr', 'it', 'pt'],
+    },
+    {
+        categories: ['one', 'two', 'other'],
+        languages: ['he', 'iw'],
+    },
+    {
+        categories: ['zero', 'one', 'other'],
+        languages: ['lv', 'prg'],
+    },
+    {
+        categories: ['one', 'few', 'other'],
+        languages: ['bs', 'hr', 'mo', 'ro', 'sh', 'sr'],
+    },
+    {
+        categories: ['one', 'few', 'many', 'other'],
+        languages: ['be', 'cs', 'lt', 'pl', 'ru', 'sk', 'uk'],
+    },
+    {
+        categories: ['one', 'two', 'few', 'other'],
+        languages: ['dsb', 'gd', 'hsb', 'sl'],
+    },
+    {
+        categories: ['one', 'two', 'few', 'many', 'other'],
+        languages: ['br', 'ga', 'mt'],
+    },
+    {
+        categories: ['zero', 'one', 'two', 'few', 'many', 'other'],
+        languages: ['ar', 'ars', 'cy', 'kw'],
+    },
+];
+const TABLE = new Map();
+for (const { categories, languages } of CATEGORY_SETS) {
+    for (const language of languages)
+        TABLE.set(language, categories);
+}
+/**
+ * Overrides for locales whose plural rules differ from their base language.
+ * Empty today -- every region variant Xcode emits (`pt-BR`, `pt-PT`, `zh-Hans`,
+ * `es-419`, `en-GB`, `fr-CA`) shares its base language's categories -- but the
+ * hook is here so a future divergence is a one-line change.
+ */
+const LOCALE_OVERRIDES = new Map();
+/** `pt-BR` -> `pt`, `zh_Hans` -> `zh`. */
+function baseLanguage(locale) {
+    return (locale.split(/[-_]/)[0] ?? locale).toLowerCase();
+}
+function requiredPluralCategories(locale) {
+    const normalized = locale.replace(/_/g, '-');
+    const override = LOCALE_OVERRIDES.get(normalized) ?? LOCALE_OVERRIDES.get(normalized.toLowerCase());
+    if (override)
+        return { categories: override, known: true };
+    const categories = TABLE.get(baseLanguage(locale));
+    if (categories)
+        return { categories, known: true };
+    return { categories: ['one', 'other'], known: false };
+}
+/**
+ * Categories required but not supplied. `other` is always required; extra
+ * categories beyond the requirement are harmless and never reported.
+ */
+function missingPluralCategories(locale, supplied) {
+    const { categories, known } = requiredPluralCategories(locale);
+    const have = new Set(supplied);
+    return { missing: categories.filter((category) => !have.has(category)), known };
+}
+
+;// CONCATENATED MODULE: ./src/core/rules/plural-coverage.ts
+
+
+/**
+ * CLDR plural categories, per language.
+ *
+ * Polish needs `one/few/many/other`; a translation that supplies only
+ * `one/other` is grammatically wrong for most numbers. Japanese needs only
+ * `other`. This runs against the source language too -- an English plural that
+ * forgot `one` is just as broken as a Polish one that forgot `few`.
+ */
+const pluralCoverageRule = {
+    name: 'plural-coverage',
+    classes: ['pluralCoverage'],
+    run({ assessment, report }) {
+        const languages = [...assessment.targets, assessment.sourceLanguage];
+        for (const { entry } of assessment.entries) {
+            for (const language of languages) {
+                const localization = entry.localizations[language];
+                if (!localization)
+                    continue;
+                for (const found of pluralGroups(localization)) {
+                    const supplied = Object.keys(found.group.branches);
+                    const { missing, known } = missingPluralCategories(language, supplied);
+                    // Never report against a locale we have no CLDR data for: the
+                    // one/other fallback is a guess, and a guessed complaint is worse
+                    // than silence.
+                    if (!known || missing.length === 0)
+                        continue;
+                    const where = found.path.length > 0 ? ` [${leafPathLabel(found.path)}]` : '';
+                    report({
+                        class: 'pluralCoverage',
+                        key: entry.key,
+                        language,
+                        loc: found.loc,
+                        message: `${language}${where} is missing the ${missing.join(', ')} plural ${missing.length === 1 ? 'category' : 'categories'}`,
+                        detail: `has ${supplied.sort().join(', ')}`,
+                    });
+                }
+            }
+        }
+    },
+};
+/**
+ * Plural groups on the localization itself and inside every substitution.
+ *
+ * A String Catalog puts the plural branches of a multi-argument string in the
+ * substitution table rather than on the localization, so a walk that skipped
+ * substitutions would find nothing in exactly the strings most likely to be
+ * wrong.
+ */
+function pluralGroups(localization) {
+    return [
         ...findVariationGroups(localization, 'plural'),
         ...Object.values(localization.substitutions ?? {}).flatMap((s) => findVariationGroups(s, 'plural')),
     ];
-    for (const { group, path, loc } of groups) {
-        const { missing, known } = missingPluralCategories(language, Object.keys(group.branches));
-        // Never report against a locale we have no CLDR data for: the one/other
-        // fallback is a guess, and a guessed complaint is worse than silence.
-        if (!known || missing.length === 0)
-            continue;
-        const where = path.length > 0 ? ` [${leafPathLabel(path)}]` : '';
-        push(issues, config, {
-            class: 'pluralCoverage',
-            catalog: catalog.path,
-            key: entry.key,
-            language,
-            loc,
-            message: `${language}${where} is missing the ${missing.join(', ')} plural ${missing.length === 1 ? 'category' : 'categories'}`,
-            detail: `has ${Object.keys(group.branches).sort().join(', ')}`,
-        });
+}
+
+;// CONCATENATED MODULE: ./src/core/rules/state.ts
+
+/**
+ * The five mutually exclusive translation states, plus Xcode's own verdict that
+ * a key is no longer referenced in source.
+ *
+ * All the work happened in the assessment; this rule only turns it into
+ * messages. That is deliberate -- the coverage percentage is derived from the
+ * same assessment, so the number and the list can never disagree.
+ */
+const stateRule = {
+    name: 'state',
+    classes: STATE_ISSUE_CLASSES,
+    run({ assessment, report }) {
+        for (const { entry, pairs } of assessment.entries) {
+            // Xcode telling us the key is gone from source is a fact about the key,
+            // not about any one language. Fanning it out across 30 locales would bury
+            // everything else in the report.
+            if (entry.extractionState === 'stale') {
+                report({
+                    class: 'stale',
+                    key: entry.key,
+                    loc: entry.loc,
+                    message: `"${entry.key}" is no longer referenced in source (extractionState: stale)`,
+                });
+            }
+            for (const pair of pairs) {
+                if (!pair.stateClass)
+                    continue;
+                report({
+                    class: pair.stateClass,
+                    key: entry.key,
+                    language: pair.language,
+                    loc: pair.loc,
+                    message: stateMessage(pair.stateClass, pair.language, pair.detail),
+                    ...(pair.detail === undefined ? {} : { detail: pair.detail }),
+                });
+            }
+        }
+    },
+};
+function stateMessage(stateClass, language, detail) {
+    const where = detail ? ` (${detail})` : '';
+    switch (stateClass) {
+        case 'missing':
+            return `no ${language} translation${where}`;
+        case 'empty':
+            return `${language} translation is empty${where}`;
+        case 'new':
+            return `${language} is marked new -- extracted but not translated${where}`;
+        case 'needsReview':
+            return `${language} is marked needs_review${where}`;
+        case 'stale':
+            return `${language} is marked stale${where}`;
     }
 }
-function push(issues, config, pending) {
-    const configured = config.severity[pending.class];
-    if (configured === 'off')
-        return;
-    const { forceWarn, ...rest } = pending;
-    issues.push({ ...rest, severity: forceWarn ? 'warn' : configured });
+
+;// CONCATENATED MODULE: ./src/core/rules/index.ts
+
+
+
+
+
+
+/**
+ * Every check, in report order.
+ *
+ * Adding one is adding a file here and a severity in `config.ts`; nothing in
+ * the analyzer, the reporters or the annotation planner needs to know it
+ * exists, because they all work from `ALL_ISSUE_CLASSES`.
+ */
+const ALL_RULES = [
+    stateRule,
+    formatSpecifierRule,
+    pluralCoverageRule,
+    duplicateKeyRule,
+    duplicateValueRule,
+    orphanKeyRule,
+    identicalToSourceRule,
+];
+
+;// CONCATENATED MODULE: ./src/core/analyze.ts
+
+
+
+
+/**
+ * Check every catalog, against every language, with every enabled rule.
+ *
+ * The whole repository is in scope on every run. There is no diff, no base
+ * branch and no incremental path: whether a German string is missing does not
+ * depend on which commit dropped it.
+ */
+function analyze(catalogs, config, options = {}) {
+    const { ignoresKey, ignoresFile } = createIgnoreMatchers(config);
+    const inScope = catalogs.filter((catalog) => !ignoresFile(catalog.path));
+    // Default is every language found anywhere, not per-catalog: a module that is
+    // simply absent from one locale is exactly the gap worth surfacing.
+    const discovered = new Set();
+    for (const catalog of inScope)
+        for (const language of catalog.languages)
+            discovered.add(language);
+    const candidates = (config.required ?? [...discovered]).slice().sort();
+    const rules = (options.rules ?? ALL_RULES).filter((rule) => rule.classes.some((issueClass) => config.severity[issueClass] !== 'off'));
+    const issues = [];
+    const assessments = [];
+    const sourceLanguages = new Set();
+    for (const catalog of inScope) {
+        const sourceLanguage = config.sourceLanguage ?? catalog.sourceLanguage;
+        sourceLanguages.add(sourceLanguage);
+        const assessment = assessCatalog(catalog, {
+            sourceLanguage,
+            targets: candidates,
+            ignoresKey,
+        });
+        assessments.push(assessment);
+        const report = (pending) => {
+            const configured = config.severity[pending.class];
+            if (configured === 'off')
+                return;
+            const { forceWarn, ...rest } = pending;
+            issues.push({
+                ...rest,
+                catalog: catalog.path,
+                severity: forceWarn ? 'warn' : configured,
+            });
+        };
+        for (const rule of rules)
+            rule.run({ assessment, config, ignoresKey, report });
+    }
+    const coverage = computeCoverage(assessments);
+    return {
+        catalogs: inScope,
+        issues: sortIssues(issues),
+        coverage,
+        languages: Object.keys(coverage).sort(),
+        sourceLanguages: [...sourceLanguages].sort(),
+    };
 }
 const SEVERITY_ORDER = { error: 0, warn: 1 };
 function sortIssues(issues) {
@@ -62596,7 +63468,7 @@ var out = __nccwpck_require__(5648);
 var out_default = /*#__PURE__*/__nccwpck_require__.n(out);
 // EXTERNAL MODULE: ./node_modules/jsonc-parser/lib/umd/main.js
 var main = __nccwpck_require__(9547);
-;// CONCATENATED MODULE: ./src/core/line-index.ts
+;// CONCATENATED MODULE: ./src/core/parse/line-index.ts
 /**
  * Maps byte offsets back to 1-based line/column.
  *
@@ -62638,7 +63510,7 @@ function stripBom(text) {
     return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
-;// CONCATENATED MODULE: ./src/core/parse-xcstrings.ts
+;// CONCATENATED MODULE: ./src/core/parse/xcstrings.ts
 
 
 
@@ -62680,7 +63552,12 @@ function parseXcstrings(filePath, raw) {
     if (stringsNode && stringsNode.type !== 'object') {
         throw new CatalogParseError(filePath, '"strings" must be a JSON object', at(stringsNode.offset).line);
     }
-    const entries = [];
+    // Insertion-ordered, and keyed so a redeclaration replaces rather than
+    // appends. JSON is last-wins, so two `"app.title"` blocks are one entry as
+    // far as Xcode is concerned -- appending both would double-count the key in
+    // every coverage figure. The redeclaration is recorded instead.
+    const byKey = new Map();
+    const duplicateKeys = [];
     const languages = new Set();
     for (const prop of objectProps(stringsNode)) {
         // An empty key is legal JSON but meaningless as a catalog entry, and Xcode
@@ -62690,10 +63567,16 @@ function parseXcstrings(filePath, raw) {
         if (!prop.value || prop.value.type !== 'object') {
             throw new CatalogParseError(filePath, `entry "${prop.key}" must be a JSON object, found ${prop.value?.type ?? 'nothing'}`, at(prop.keyNode.offset).line);
         }
-        const entry = parseEntry(prop.key, prop.value, at(prop.keyNode.offset), at);
-        for (const lang of Object.keys(entry.localizations))
-            languages.add(lang);
-        entries.push(entry);
+        const loc = at(prop.keyNode.offset);
+        const previous = byKey.get(prop.key);
+        if (previous)
+            duplicateKeys.push({ key: prop.key, loc, firstLoc: previous.loc });
+        byKey.set(prop.key, parseEntry(prop.key, prop.value, loc, at));
+    }
+    const entries = [...byKey.values()];
+    for (const entry of entries) {
+        for (const language of Object.keys(entry.localizations))
+            languages.add(language);
     }
     languages.add(sourceLanguage);
     return {
@@ -62703,6 +63586,7 @@ function parseXcstrings(filePath, raw) {
         ...(version === undefined ? {} : { version }),
         entries,
         languages: [...languages].sort(),
+        duplicateKeys,
     };
 }
 function parseEntry(key, node, keyLoc, at) {
@@ -62821,9 +63705,7 @@ function numberProp(node, name) {
         : undefined;
 }
 
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-;// CONCATENATED MODULE: ./src/core/parse-strings.ts
+;// CONCATENATED MODULE: ./src/core/parse/strings.ts
 
 
 
@@ -63231,6 +64113,7 @@ function assembleLegacyCatalogs(files, options = {}) {
                 keys: new Map(),
                 anchors: new Map(),
                 order: [],
+                duplicateKeys: [],
             };
             tables.set(id, table);
         }
@@ -63241,6 +64124,13 @@ function assembleLegacyCatalogs(files, options = {}) {
                 byLanguage = new Map();
                 table.keys.set(key, byLanguage);
                 table.order.push(key);
+            }
+            // Only a redeclaration *within the same file* is a duplicate. A key that
+            // appears in both `Localizable.strings` and `Localizable.stringsdict` is
+            // the documented way to give a key plural forms, not a mistake.
+            const previous = byLanguage.get(info.language);
+            if (previous && previous.loc.file === loc.file) {
+                table.duplicateKeys.push({ key, loc, firstLoc: previous.loc, language: info.language });
             }
             byLanguage.set(info.language, localization);
             if (!table.anchors.has(key))
@@ -63287,77 +64177,48 @@ function assembleLegacyCatalogs(files, options = {}) {
             sourceLanguage,
             entries,
             languages,
+            duplicateKeys: table.duplicateKeys,
         };
     })
         .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-;// CONCATENATED MODULE: ./src/core/load.ts
+;// CONCATENATED MODULE: ./src/core/scan.ts
 
 
 
 
 
 
-
-
-function workingTreeFiles(cwd, config) {
-    return {
-        label: 'the working tree',
-        list: () => out_default().sync(config.paths, {
-            cwd,
-            dot: true,
-            onlyFiles: true,
-            followSymbolicLinks: false,
-            ignore: config.ignoreFiles,
-        }),
-        read: (path) => {
-            try {
-                return (0,external_node_fs_namespaceObject.readFileSync)(`${cwd}/${path}`);
-            }
-            catch {
-                return undefined;
-            }
-        },
-    };
-}
-function gitRevisionFiles(revision, cwd) {
-    return {
-        label: revision,
-        list: () => {
-            const out = (0,external_node_child_process_namespaceObject.execFileSync)('git', ['ls-tree', '-r', '--name-only', '-z', revision], {
-                cwd,
-                encoding: 'utf8',
-                maxBuffer: 256 * 1024 * 1024,
-            });
-            return out.split('\0').filter((line) => line.length > 0);
-        },
-        read: (path) => {
-            try {
-                return (0,external_node_child_process_namespaceObject.execFileSync)('git', ['show', `${revision}:${path}`], {
-                    cwd,
-                    maxBuffer: 128 * 1024 * 1024,
-                    stdio: ['ignore', 'pipe', 'ignore'],
-                });
-            }
-            catch {
-                // Absent at this revision -- a file the PR added.
-                return undefined;
-            }
-        },
-    };
-}
-/** Parse every catalog a revision contains, honouring the configured globs. */
-function loadCatalogs(source, config) {
-    const matches = createPathMatcher(config);
-    const paths = source.list().filter(matches).sort();
+/**
+ * Find and parse every catalog in the working tree.
+ *
+ * The whole repository, every time. There is no base-branch comparison and no
+ * incremental mode: a translation that is missing is missing whether or not
+ * this particular change is what dropped it, and a check that only looks at the
+ * diff will never tell you the thing you actually want to know.
+ */
+function scan(cwd, config) {
+    const matched = out_default().sync(config.paths, {
+        cwd,
+        dot: true,
+        onlyFiles: true,
+        followSymbolicLinks: false,
+        ignore: config.ignoreFiles,
+    })
+        .sort();
     const catalogs = [];
     const errors = [];
     const legacy = [];
-    for (const path of paths) {
-        const buffer = source.read(path);
-        if (!buffer)
+    for (const path of matched) {
+        let buffer;
+        try {
+            buffer = (0,external_node_fs_namespaceObject.readFileSync)((0,external_node_path_namespaceObject.join)(cwd, path));
+        }
+        catch (error) {
+            errors.push(new CatalogParseError(path, `could not read: ${error.message}`));
             continue;
+        }
         try {
             if (path.endsWith('.xcstrings')) {
                 catalogs.push(parseXcstrings(path, decodeTextFile(buffer)));
@@ -63379,144 +64240,86 @@ function loadCatalogs(source, config) {
         sourceLanguage: config.sourceLanguage,
         onError: (error) => errors.push(error),
     }));
-    return { catalogs: catalogs.sort((a, b) => a.path.localeCompare(b.path)), errors };
-}
-
-;// CONCATENATED MODULE: ./src/core/ratchet.ts
-
-
-
-/**
- * The base branch could not be resolved. Distinct from "translations are
- * incomplete": this is a setup problem and exits 2, not 1.
- */
-class BaseRefError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'BaseRefError';
-    }
-}
-/**
- * Identity of an issue for ratchet purposes.
- *
- * The five state classes share one identity per (catalog, key, language),
- * because they are mutually exclusive states of the same pair -- a translation
- * that goes from `new` to `empty` is still the same untranslated string and
- * must not register as a fresh regression. The structural checks each get their
- * own identity, because a format-specifier break in an already-`needs_review`
- * string is genuinely a new problem.
- */
-function issueIdentity(issue) {
-    const group = issue.class === 'formatSpecifier' || issue.class === 'pluralCoverage' ? issue.class : 'state';
-    // JSON-encoded so no separator can collide with a path, key or language.
-    return JSON.stringify([issue.catalog, issue.key, issue.language ?? null, group]);
-}
-/**
- * Compare head against base semantically.
- *
- * Never textually: Xcode rewrites large regions of `.xcstrings` JSON on every
- * build, so a text diff of these files is almost pure noise. Both sides are
- * parsed into issue sets and the sets are compared.
- */
-function compareToBase(headCatalogs, base, config) {
-    const loaded = loadCatalogs(base, config);
-    // Both sides are assessed against the union of the languages either side
-    // knows about, so adding or removing a language cannot skew the comparison.
-    const languages = new Set();
-    for (const catalog of [...headCatalogs, ...loaded.catalogs]) {
-        for (const language of catalog.languages)
-            languages.add(language);
-    }
-    const options = { languages: [...languages].sort() };
-    const headResult = analyze(headCatalogs, config, options);
-    const baseResult = analyze(loaded.catalogs, config, options);
-    const baseIdentities = new Set(baseResult.issues.map(issueIdentity));
-    const headIdentities = new Set(headResult.issues.map(issueIdentity));
     return {
-        baseLabel: base.label,
-        head: headResult,
-        base: baseResult,
-        newIssues: headResult.issues.filter((issue) => !baseIdentities.has(issueIdentity(issue))),
-        fixedIssues: baseResult.issues.filter((issue) => !headIdentities.has(issueIdentity(issue))),
-        baseCoverage: baseResult.coverage,
-        baseErrors: loaded.errors,
+        catalogs: catalogs.sort((a, b) => a.path.localeCompare(b.path)),
+        errors,
+        matched,
     };
 }
-const FETCH_DEPTH_HINT = [
-    'The ratchet compares against the base branch, which is not in this clone.',
-    'Add fetch-depth: 0 to your checkout step:',
-    '',
-    '    - uses: actions/checkout@v5',
-    '      with:',
-    '        fetch-depth: 0',
-    '',
-    'Or switch to mode: absolute, which needs no base branch.',
-].join('\n');
-function git(args, cwd) {
-    try {
-        return (0,external_node_child_process_namespaceObject.execFileSync)('git', args, {
-            cwd,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-        }).trim();
+
+;// CONCATENATED MODULE: ./src/lint.ts
+
+
+
+
+
+/**
+ * The whole check, in one call.
+ *
+ * Kept separate from `main.ts` so the engine can be exercised without the
+ * GitHub Actions runtime: every test drives this directly, and nothing in here
+ * touches `@actions/core`.
+ */
+function lint(options) {
+    // Resolved against `cwd` so that scanning one directory does not silently
+    // pick up a config file belonging to another.
+    const configPath = (0,external_node_path_namespaceObject.isAbsolute)(options.configPath)
+        ? options.configPath
+        : (0,external_node_path_namespaceObject.join)(options.cwd, options.configPath);
+    const config = options.config ?? loadConfig(configPath, options.configExplicit ?? false);
+    const threshold = options.threshold ?? 100;
+    const scanned = scan(options.cwd, config);
+    // Finding nothing is a configuration error, not a pass. A linter that reports
+    // "every language is fully translated" because its globs match no files is
+    // worse than one that is switched off, because it looks like it is working.
+    if (scanned.matched.length === 0) {
+        throw new ConfigError(`no catalog files matched. Searched for:\n` +
+            config.paths.map((pattern) => `  - ${pattern}`).join('\n') +
+            `\n\nCheck the "paths" option${config.source ? ` in ${config.source}` : ''}, or that the ` +
+            'checkout ran before this step.');
     }
-    catch {
-        return undefined;
-    }
+    return {
+        config,
+        parseErrors: scanned.errors,
+        report: buildReport(analyze(scanned.catalogs, config), {
+            config,
+            threshold,
+            filesScanned: scanned.matched.length,
+        }),
+    };
 }
 /**
- * Resolve the revision to compare against.
+ * Turn an analysis into the shape all three report surfaces read.
  *
- * Prefers the merge base over the base tip: comparing against the tip
- * attributes everything that landed on main since the branch point to this PR,
- * in both directions, which is exactly the unfair complaint the ratchet exists
- * to avoid.
+ * The verdict lives here and nowhere else. `passed` is the one thing the whole
+ * action exists to decide, and having exactly one function compute it means the
+ * comment, the summary and the exit code cannot disagree about it.
  */
-function resolveBaseRevision(options) {
-    const { cwd, baseRef, allowFetch = false, onNotice } = options;
-    if (!baseRef) {
-        throw new BaseRefError(`No base branch to compare against.\n\n${FETCH_DEPTH_HINT}`);
-    }
-    const candidates = [`origin/${baseRef}`, baseRef, `refs/remotes/origin/${baseRef}`];
-    const verify = (ref) => git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd) !== undefined;
-    let resolved = candidates.find(verify);
-    if (!resolved && allowFetch) {
-        onNotice?.(`base ref "${baseRef}" is not in this clone; fetching it`);
-        git([
-            'fetch',
-            '--no-tags',
-            '--quiet',
-            'origin',
-            `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`,
-        ], cwd);
-        resolved = candidates.find(verify);
-    }
-    if (!resolved) {
-        throw new BaseRefError(`Could not resolve the base branch "${baseRef}".\n\n${FETCH_DEPTH_HINT}`);
-    }
-    const mergeBase = git(['merge-base', resolved, 'HEAD'], cwd);
-    if (mergeBase)
-        return mergeBase;
-    // Shallow clones often have the branch tip but not enough history to find a
-    // merge base. Comparing against the tip is still far better than nothing.
-    onNotice?.(`no merge base between ${resolved} and HEAD (likely a shallow clone); ` +
-        `comparing against ${resolved} directly. Set fetch-depth: 0 for an exact comparison.`);
-    return resolved;
+function buildReport(result, options) {
+    const shortfalls = belowThreshold(result.coverage, options.threshold, {
+        required: options.config.required,
+        sourceLanguages: result.sourceLanguages,
+    });
+    const errors = result.issues.filter((issue) => issue.severity === 'error');
+    const warnings = result.issues.filter((issue) => issue.severity === 'warn');
+    return {
+        // Coverage at threshold is not the whole story: a format-specifier mismatch
+        // crashes at runtime while coverage still reads 100%.
+        passed: shortfalls.length === 0 && errors.length === 0,
+        result,
+        issues: result.issues,
+        errors,
+        warnings,
+        shortfalls,
+        threshold: options.threshold,
+        filesScanned: options.filesScanned,
+    };
 }
-function baseRevisionFiles(revision, cwd) {
-    return gitRevisionFiles(revision, cwd);
-}
-/** Languages below the threshold, for `mode: absolute`. */
-function belowThreshold(coverage, threshold, required) {
-    const languages = required ?? Object.keys(coverage);
-    return languages
-        .map((language) => ({
-        language,
-        percent: coverage[language]?.percent ?? 0,
-        threshold,
-    }))
-        .filter((entry) => entry.percent < threshold)
-        .sort((a, b) => a.percent - b.percent || a.language.localeCompare(b.language));
+/** Process exit code for a completed run, before `fail: false` is applied. */
+function exitCodeFor(result) {
+    if (result.parseErrors.length > 0)
+        return 2;
+    return result.report.passed ? 0 : 1;
 }
 
 ;// CONCATENATED MODULE: ./src/report/annotations.ts
@@ -63535,6 +64338,10 @@ const TITLES = {
     stale: 'Stale key',
     formatSpecifier: 'Format specifier mismatch',
     pluralCoverage: 'Incomplete plural coverage',
+    identicalToSource: 'Identical to the source string',
+    duplicateKey: 'Duplicate key',
+    duplicateValue: 'Duplicate source string',
+    orphanKey: 'Orphan key',
 };
 function planAnnotations(issues, maxPerLevel = DEFAULT_MAX_PER_LEVEL) {
     const dropped = { error: 0, warning: 0 };
@@ -63571,317 +64378,6 @@ function planAnnotations(issues, maxPerLevel = DEFAULT_MAX_PER_LEVEL) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/report/model.ts
-
-/** Inline code that survives a Markdown table cell. */
-function code(value) {
-    if (value === '')
-        return '``';
-    const fence = value.includes('`') ? '``' : '`';
-    const padded = value.startsWith('`') || value.endsWith('`') ? ` ${value} ` : value;
-    return `${fence}${padded.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')}${fence}`;
-}
-function percent(value) {
-    return `${Number.isInteger(value) ? value : value.toFixed(1)}%`;
-}
-function delta(before, after) {
-    if (before === undefined)
-        return 'new';
-    const difference = Math.round((after - before) * 10) / 10;
-    if (difference === 0)
-        return '—';
-    return `${difference < 0 ? '🔻' : '🔺'} ${percent(Math.abs(difference))}`;
-}
-function table(headers, rows) {
-    return [
-        `| ${headers.join(' | ')} |`,
-        `|${headers.map(() => '---').join('|')}|`,
-        ...rows.map((row) => `| ${row.join(' | ')} |`),
-    ].join('\n');
-}
-function coverageRows(input) {
-    const blockingByLanguage = new Map();
-    for (const issue of input.blocking) {
-        if (!issue.language)
-            continue;
-        blockingByLanguage.set(issue.language, (blockingByLanguage.get(issue.language) ?? 0) + 1);
-    }
-    return input.result.languages.map((language) => ({
-        language,
-        before: input.comparison?.baseCoverage[language]?.percent,
-        after: input.result.coverage[language]?.percent ?? 0,
-        blocking: blockingByLanguage.get(language) ?? 0,
-    }));
-}
-function renderCoverageTable(input) {
-    const rows = coverageRows(input);
-    if (rows.length === 0)
-        return '_No target languages found._';
-    if (input.mode === 'ratchet') {
-        return table(['Language', 'Before', 'After', 'Δ', 'New issues'], rows.map((row) => [
-            code(row.language),
-            row.before === undefined ? '—' : percent(row.before),
-            percent(row.after),
-            delta(row.before, row.after),
-            row.blocking === 0 ? '0' : `**${row.blocking}**`,
-        ]));
-    }
-    const threshold = input.threshold ?? 100;
-    return table(['Language', 'Coverage', 'Threshold', 'Status'], rows.map((row) => [
-        code(row.language),
-        percent(row.after),
-        percent(threshold),
-        row.after >= threshold ? '✓' : '✕ below',
-    ]));
-}
-function pluralise(count, singular, plural = `${singular}s`) {
-    return `${count} ${count === 1 ? singular : plural}`;
-}
-/** Section headings. */
-const CLASS_LABELS = {
-    missing: 'Missing translations',
-    empty: 'Empty values',
-    new: 'Untranslated (new)',
-    needsReview: 'Needs review',
-    stale: 'Stale keys',
-    formatSpecifier: 'Format specifier mismatches',
-    pluralCoverage: 'Incomplete plural coverage',
-};
-/** Short forms, so the summary table stays narrow enough to scan. */
-const CLASS_COLUMNS = {
-    missing: 'Missing',
-    empty: 'Empty',
-    new: 'New',
-    needsReview: 'Review',
-    stale: 'Stale',
-    formatSpecifier: 'Format',
-    pluralCoverage: 'Plurals',
-};
-/** Beyond this many codes in one cell, list a few and count the rest. */
-const MAX_LANGUAGES_PER_CELL = 8;
-/**
- * Group languages that have exactly the same issue counts onto one row.
- *
- * A project shipping eight locales usually breaks all of them the same way, so
- * eight near-identical rows is eight times the reading for the same fact. One
- * row saying `de, es, fr, it, ja, ko, pt-BR, zh-Hans -- 3 missing` is the
- * finding; the per-language split only matters when it actually differs.
- */
-function groupLanguagesByIssues(languages, issues) {
-    const empty = () => Object.fromEntries(ALL_ISSUE_CLASSES.map((c) => [c, 0]));
-    const perLanguage = new Map(languages.map((language) => [language, empty()]));
-    for (const issue of issues) {
-        if (!issue.language)
-            continue;
-        const counts = perLanguage.get(issue.language);
-        if (counts)
-            counts[issue.class]++;
-    }
-    const grouped = new Map();
-    for (const [language, counts] of perLanguage) {
-        const key = JSON.stringify(counts);
-        const existing = grouped.get(key);
-        if (existing)
-            existing.languages.push(language);
-        else {
-            grouped.set(key, {
-                languages: [language],
-                counts,
-                total: Object.values(counts).reduce((a, b) => a + b, 0),
-            });
-        }
-    }
-    return [...grouped.values()]
-        .map((group) => ({ ...group, languages: group.languages.sort() }))
-        .sort((a, b) => b.total - a.total || (a.languages[0] ?? '').localeCompare(b.languages[0] ?? ''));
-}
-/** `de, fr, ja`, or `all 12 languages` when the group covers every one. */
-function renderLanguageCell(languages, totalLanguages) {
-    if (languages.length === 0)
-        return '—';
-    if (totalLanguages > 1 && languages.length === totalLanguages) {
-        return `all ${totalLanguages} languages`;
-    }
-    if (languages.length > MAX_LANGUAGES_PER_CELL) {
-        const shown = languages.slice(0, MAX_LANGUAGES_PER_CELL).map(code).join(', ');
-        return `${shown} +${languages.length - MAX_LANGUAGES_PER_CELL} more`;
-    }
-    return languages.map(code).join(', ');
-}
-/**
- * Counts per language group, with a column only for the classes that actually
- * occurred. Percentages are deliberately absent: "2 missing" is something a
- * reviewer can act on, "98.8%" is not.
- */
-function renderLanguageTable(languages, issues) {
-    const groups = groupLanguagesByIssues(languages, issues);
-    if (groups.length === 0)
-        return '';
-    const classes = ALL_ISSUE_CLASSES.filter((c) => groups.some((g) => g.counts[c] > 0));
-    if (classes.length === 0)
-        return '';
-    const headers = ['Languages', ...classes.map((c) => CLASS_COLUMNS[c]), 'Total'];
-    const rows = groups.map((group) => [
-        renderLanguageCell(group.languages, languages.length),
-        ...classes.map((c) => (group.counts[c] === 0 ? '—' : String(group.counts[c]))),
-        group.total === 0 ? '✓ clean' : `**${group.total}**`,
-    ]);
-    return table(headers, rows);
-}
-function renderKeySections(issues, languages, maxRows, options = {}) {
-    const collapsed = options.collapsed ?? true;
-    const sections = [];
-    for (const issueClass of ALL_ISSUE_CLASSES) {
-        const forClass = issues.filter((issue) => issue.class === issueClass);
-        if (forClass.length === 0)
-            continue;
-        const body = STATE_ISSUE_CLASSES.includes(issueClass)
-            ? renderKeyTable(forClass, languages, maxRows)
-            : renderMessageList(forClass, maxRows);
-        sections.push(collapsed
-            ? [
-                `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
-                '',
-                body,
-                '',
-                '</details>',
-            ].join('\n')
-            : [`**${CLASS_LABELS[issueClass]}** · ${forClass.length}`, '', body].join('\n'));
-    }
-    return sections;
-}
-/** Key -> the languages it is missing from, so each key appears once. */
-function renderKeyTable(issues, languages, maxRows) {
-    const rows = new Map();
-    for (const issue of issues) {
-        const id = JSON.stringify([issue.catalog, issue.key]);
-        let row = rows.get(id);
-        if (!row) {
-            row = { catalog: issue.catalog, key: issue.key, languages: [] };
-            rows.set(id, row);
-        }
-        if (issue.language)
-            row.languages.push(issue.language);
-    }
-    const all = [...rows.values()];
-    // Widest blast radius first: a key missing everywhere matters more than one
-    // missing in a single locale.
-    all.sort((a, b) => b.languages.length - a.languages.length || a.key.localeCompare(b.key));
-    const showCatalog = new Set(all.map((r) => r.catalog)).size > 1;
-    const shown = all.slice(0, maxRows);
-    const headers = [...(showCatalog ? ['Catalog'] : []), 'Key', 'Languages'];
-    const body = shown.map((row) => [
-        ...(showCatalog ? [code(row.catalog)] : []),
-        code(row.key),
-        renderLanguageCell(row.languages.sort(), languages.length),
-    ]);
-    const rendered = table(headers, body);
-    return all.length > shown.length
-        ? `${rendered}\n\n_+ ${all.length - shown.length} more keys._`
-        : rendered;
-}
-/** Structural issues carry a specific message, so they read better as a list. */
-function renderMessageList(issues, maxRows) {
-    const shown = issues.slice(0, maxRows);
-    const lines = shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`);
-    if (issues.length > shown.length) {
-        lines.push('', `_+ ${issues.length - shown.length} more._`);
-    }
-    return lines.join('\n');
-}
-
-;// CONCATENATED MODULE: ./src/report/comment.ts
-
-/**
- * Hidden marker used to find our own comment on re-runs.
- *
- * The comment is sticky: we search the PR for this marker and PATCH the comment
- * that carries it, so a branch with twenty pushes has one comment, not twenty.
- */
-const COMMENT_MARKER = '<!-- xcstrings-lint -->';
-/** GitHub rejects comment bodies over 65536 characters. Leave headroom. */
-const MAX_COMMENT_LENGTH = 60000;
-const MAX_DETAIL_ROWS = 40;
-/** The backlog is context, not the finding -- show less of it. */
-const MAX_PRE_EXISTING_ROWS = 20;
-/**
- * Render the sticky comment.
- *
- * Layout is deliberately two-tier. A reviewer opening the PR should learn
- * what broke and where in about three seconds -- one headline, one grouped
- * table -- and everything past that is collapsed until they ask for it. The
- * detail matters, but not before they know whether it concerns them.
- */
-function renderComment(input) {
-    const status = input.passed ? '**passed**' : '**failed**';
-    const lines = [`### 🌍 xcstrings-lint — ${status}`, '', headline(input), ''];
-    const summary = renderLanguageTable(input.result.languages, input.blocking);
-    if (summary)
-        lines.push(summary, '');
-    for (const section of renderKeySections(input.blocking, input.result.languages, MAX_DETAIL_ROWS)) {
-        lines.push(section, '');
-    }
-    const fixed = input.comparison?.fixedIssues.length ?? 0;
-    if (fixed > 0)
-        lines.push(`✅ ${pluralise(fixed, 'issue')} fixed on this branch.`, '');
-    // The backlog gets a section of its own rather than a bare count. It is not
-    // this PR's to fix, so it stays collapsed and out of the headline -- but a
-    // reviewer who wants to know what is already broken should not have to go
-    // digging through the job summary to find out.
-    const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue));
-    if (input.mode === 'ratchet' && carried.length > 0) {
-        const body = [
-            renderLanguageTable(input.result.languages, carried),
-            ...renderKeySections(carried, input.result.languages, MAX_PRE_EXISTING_ROWS, {
-                collapsed: false,
-            }),
-        ].filter(Boolean);
-        lines.push(`<details><summary><b>Pre-existing issues</b> · ${carried.length} — not introduced by this PR</summary>`, '', body.join('\n\n'), '', '</details>', '');
-    }
-    lines.push(footer(input));
-    return truncate(lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd());
-}
-function headline(input) {
-    const base = input.baseRef ? code(input.baseRef) : 'the base branch';
-    const keys = new Set(input.blocking.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size;
-    const languages = new Set(input.blocking.map((issue) => issue.language).filter(Boolean)).size;
-    if (input.mode === 'ratchet') {
-        if (input.blocking.length === 0)
-            return `No new localization issues vs ${base}.`;
-        return (`**${pluralise(input.blocking.length, 'new issue')}** vs ${base} — ` +
-            `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
-    }
-    const shortfalls = input.shortfalls ?? [];
-    if (input.blocking.length === 0 && shortfalls.length === 0) {
-        return 'Every language is fully translated.';
-    }
-    return (`**${pluralise(input.blocking.length, 'issue')}** — ` +
-        `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
-}
-function footer(input) {
-    const parts = [`Mode: \`${input.mode}\``];
-    if (input.annotationsDropped) {
-        parts.push(`${input.annotationsDropped} annotations not shown inline — see the job summary`);
-    }
-    return `<sub>${parts.join(' · ')} · ${COMMENT_MARKER}</sub>`;
-}
-/**
- * Trim an over-long body without losing the marker, which is what makes the
- * comment sticky -- a truncated body that dropped it would orphan the comment
- * and post a fresh one on every push.
- */
-function truncate(body, limit = MAX_COMMENT_LENGTH) {
-    if (body.length <= limit)
-        return body;
-    const notice = '\n\n_Report truncated._\n';
-    const marker = body.endsWith('</sub>') ? `\n<sub>${COMMENT_MARKER}</sub>` : `\n${COMMENT_MARKER}`;
-    const room = limit - notice.length - marker.length;
-    return `${body.slice(0, Math.max(0, room)).trimEnd()}${notice}${marker}`;
-}
-function isOurComment(body) {
-    return typeof body === 'string' && body.includes(COMMENT_MARKER);
-}
-
 ;// CONCATENATED MODULE: ./src/report/summary.ts
 
 /**
@@ -63902,13 +64398,12 @@ function renderSummary(input) {
         ...describeRun(input),
         '',
     ];
-    if (input.blocking.length > 0) {
-        const heading = input.mode === 'ratchet' ? 'New issues' : 'Issues';
-        lines.push(`### ${heading}`, '');
-        const grouped = renderLanguageTable(languages, input.blocking);
+    if (input.errors.length > 0) {
+        lines.push('### Issues', '');
+        const grouped = renderLanguageTable(languages, input.errors);
         if (grouped)
             lines.push(grouped, '');
-        for (const section of renderKeySections(input.blocking, languages, summary_MAX_DETAIL_ROWS)) {
+        for (const section of renderKeySections(input.errors, languages, summary_MAX_DETAIL_ROWS)) {
             lines.push(section, '');
         }
     }
@@ -63916,13 +64411,8 @@ function renderSummary(input) {
     // open when they want the standing number, rather than the one thing that
     // changed in front of them.
     lines.push('### Coverage', '', renderCoverageTable(input), '');
-    const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue));
-    if (carried.length > 0) {
-        lines.push(`<details><summary>Pre-existing issues · ${carried.length}</summary>`, '', renderLanguageTable(languages, carried), '', ...renderKeySections(carried, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
-    }
-    const fixed = input.comparison?.fixedIssues ?? [];
-    if (fixed.length > 0) {
-        lines.push(`<details><summary>Fixed on this branch · ${fixed.length}</summary>`, '', ...renderKeySections(fixed, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
+    if (input.warnings.length > 0) {
+        lines.push(`<details><summary>Warnings · ${input.warnings.length}</summary>`, '', renderLanguageTable(languages, input.warnings), '', ...renderKeySections(input.warnings, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
     }
     if (input.annotationsDropped) {
         lines.push(`_${input.annotationsDropped} annotations were not shown inline; GitHub caps them per step._`, '');
@@ -63933,21 +64423,21 @@ function renderSummary(input) {
         : body;
 }
 function describeRun(input) {
-    const base = input.baseRef ? code(input.baseRef) : 'the base branch';
-    const catalogs = pluralise(input.result.catalogs.length, 'catalog');
-    const languages = pluralise(input.result.languages.length, 'language');
-    if (input.mode === 'ratchet') {
-        const headline = input.blocking.length === 0
-            ? `No new localization issues vs ${base}.`
-            : `${pluralise(input.blocking.length, 'new issue')} vs ${base}.`;
-        return [headline, '', `Checked ${catalogs} across ${languages}.`];
-    }
-    const threshold = input.threshold ?? 100;
-    const shortfalls = input.shortfalls ?? [];
-    const headline = shortfalls.length === 0
-        ? `Every language is at or above ${threshold}% coverage.`
-        : `${pluralise(shortfalls.length, 'language')} below the ${threshold}% threshold.`;
-    return [headline, '', `Checked ${catalogs} across ${languages}.`];
+    const scope = `Checked ${pluralise(input.filesScanned, 'file')} — ` +
+        `${pluralise(input.result.catalogs.length, 'catalog')} across ` +
+        `${pluralise(input.result.languages.length, 'language')}.`;
+    const shortfalls = input.shortfalls;
+    const headline = input.errors.length === 0 && shortfalls.length === 0
+        ? `Every language is at or above ${input.threshold}% coverage.`
+        : [
+            input.errors.length > 0 ? pluralise(input.errors.length, 'blocking issue') : '',
+            shortfalls.length > 0
+                ? `${pluralise(shortfalls.length, 'language')} below the ${input.threshold}% threshold`
+                : '',
+        ]
+            .filter(Boolean)
+            .join(', ') + '.';
+    return [headline, '', scope];
 }
 /**
  * Parse failures get their own block. These are a different kind of problem
@@ -63966,83 +64456,6 @@ function renderParseErrors(errors) {
     ].join('\n');
 }
 
-;// CONCATENATED MODULE: ./src/run.ts
-
-
-
-
-
-/**
- * The whole check, in one call.
- *
- * Kept separate from `main.ts` so the engine can be exercised without the
- * GitHub Actions runtime: every test drives this directly, and nothing in here
- * touches `@actions/core`.
- */
-function run(options) {
-    // Resolved against `cwd` so that scanning one directory does not silently
-    // pick up a config file belonging to another.
-    const configPath = (0,external_node_path_namespaceObject.isAbsolute)(options.configPath)
-        ? options.configPath
-        : (0,external_node_path_namespaceObject.join)(options.cwd, options.configPath);
-    const config = options.config ?? loadConfig(configPath, options.configExplicit ?? false);
-    const threshold = options.threshold ?? 100;
-    const head = loadCatalogs(workingTreeFiles(options.cwd, config), config);
-    const parseErrors = [...head.errors];
-    if (options.mode === 'ratchet') {
-        const revision = resolveBaseRevision({
-            cwd: options.cwd,
-            baseRef: options.baseRef ?? '',
-            allowFetch: options.allowFetch ?? false,
-            ...(options.onNotice ? { onNotice: options.onNotice } : {}),
-        });
-        const comparison = compareToBase(head.catalogs, baseRevisionFiles(revision, options.cwd), config);
-        // A base we could not parse makes every head issue look new. Better to stop
-        // than to fail a PR for a hundred problems it did not introduce.
-        parseErrors.push(...comparison.baseErrors);
-        const attributed = comparison.newIssues;
-        return {
-            config,
-            parseErrors,
-            input: {
-                mode: 'ratchet',
-                passed: countErrors(attributed) === 0,
-                result: comparison.head,
-                allIssues: comparison.head.issues,
-                blocking: attributed,
-                comparison,
-                ...(options.baseRef ? { baseRef: options.baseRef } : {}),
-            },
-        };
-    }
-    const result = analyze(head.catalogs, config);
-    const shortfalls = belowThreshold(result.coverage, threshold, config.required);
-    return {
-        config,
-        parseErrors,
-        input: {
-            mode: 'absolute',
-            // Coverage at threshold is not the whole story: a format-specifier
-            // mismatch crashes at runtime while coverage still reads 100%.
-            passed: shortfalls.length === 0 && countErrors(result.issues) === 0,
-            result,
-            allIssues: result.issues,
-            blocking: result.issues,
-            shortfalls,
-            threshold,
-        },
-    };
-}
-function countErrors(issues) {
-    return issues.filter((issue) => issue.severity === 'error').length;
-}
-/** Process exit code for a completed run, before `fail: false` is applied. */
-function exitCodeFor(result) {
-    if (result.parseErrors.length > 0)
-        return 2;
-    return result.input.passed ? 0 : 1;
-}
-
 ;// CONCATENATED MODULE: ./src/main.ts
 
 
@@ -64056,21 +64469,14 @@ function exitCodeFor(result) {
 /** Action outputs have a size limit; the full report lives in the job summary. */
 const MAX_REPORT_OUTPUT = 50_000;
 async function runAction() {
-    const mode = readMode();
-    const shouldComment = readBoolean('comment', true);
-    const shouldAnnotate = readBoolean('annotations', true);
-    const shouldFail = readBoolean('fail', true);
-    const configPath = getInput('config') || DEFAULT_CONFIG_PATH;
-    const result = run({
+    const inputs = readInputs((name) => getInput(name));
+    if (inputs.removedMode)
+        warning(removedModeNotice(inputs.removedMode));
+    const result = lint({
         cwd: process.cwd(),
-        configPath,
-        // The default path is allowed to be absent -- zero-config is supported.
-        configExplicit: configPath !== DEFAULT_CONFIG_PATH,
-        mode,
-        threshold: readThreshold(),
-        baseRef: mode === 'ratchet' ? requireBaseRef() : undefined,
-        allowFetch: true,
-        onNotice: (message) => info(message),
+        configPath: inputs.configPath,
+        configExplicit: inputs.configExplicit,
+        threshold: inputs.threshold,
     });
     if (result.parseErrors.length > 0) {
         for (const parseError of result.parseErrors) {
@@ -64083,108 +64489,65 @@ async function runAction() {
         await writeSummary(renderParseErrors(result.parseErrors));
         return misconfigured(`Could not read ${result.parseErrors.length} catalog file(s). See the annotations above.`);
     }
-    const { input } = result;
-    const plan = planAnnotations(input.blocking);
-    if (shouldAnnotate) {
-        for (const annotation of plan.annotations) {
-            const properties = {
-                title: annotation.title,
-                file: annotation.file,
-                startLine: annotation.line,
-                ...(annotation.column === undefined ? {} : { startColumn: annotation.column }),
-            };
-            if (annotation.level === 'error')
-                error(annotation.message, properties);
-            else
-                warning(annotation.message, properties);
-        }
-        if (plan.totalDropped > 0) {
-            info(`+ ${plan.totalDropped} more — see the job summary`);
-        }
+    const report = result.report;
+    if (inputs.annotations) {
+        const dropped = emitAnnotations(report.errors.concat(report.warnings));
+        if (dropped > 0)
+            report.annotationsDropped = dropped;
     }
-    if (plan.totalDropped > 0)
-        input.annotationsDropped = plan.totalDropped;
-    const body = renderComment(input);
-    await writeSummary(renderSummary(input));
-    if (shouldComment)
-        await postComment(body);
-    setOutput('passed', String(input.passed));
-    setOutput('coverage', JSON.stringify(Object.fromEntries(Object.entries(input.result.coverage).map(([language, c]) => [language, c.percent]))));
-    setOutput('issue-count', String(input.blocking.filter((i) => i.severity === 'error').length));
-    setOutput('report', truncate(body, MAX_REPORT_OUTPUT));
+    const body = renderComment(report);
+    await writeSummary(renderSummary(report));
+    if (inputs.comment)
+        await postComment(body, getInput('github-token'));
+    setOutputs(report, body);
     // exitCodeFor is the single definition of the 0/1/2 contract. Parse errors
     // (2) already returned above, so this is 0 or 1 -- and because the action
     // asks the same function the tests assert on, the two cannot drift.
     if (exitCodeFor(result) === 0) {
-        info('No new localization issues.');
+        info(`No localization issues across ${report.filesScanned} file(s).`);
         return;
     }
-    if (shouldFail)
-        setFailed(failureSummary(input.blocking.length, mode));
+    const summary = failureSummary(report.errors.length, report.shortfalls.length, inputs);
+    if (inputs.fail)
+        setFailed(summary);
     else
-        warning(`${failureSummary(input.blocking.length, mode)} (fail: false, not blocking)`);
+        warning(`${summary} (fail: false, not blocking)`);
 }
-function failureSummary(count, mode) {
-    const noun = count === 1 ? 'issue' : 'issues';
-    return mode === 'ratchet'
-        ? `${count} new localization ${noun} introduced by this change.`
-        : `${count} localization ${noun} found.`;
-}
-function readMode() {
-    const value = (getInput('mode') || 'ratchet').trim();
-    if (value !== 'ratchet' && value !== 'absolute') {
-        throw new ConfigError(`mode must be "ratchet" or "absolute", got "${value}"`);
+/** Emit inline annotations and return how many the per-level cap discarded. */
+function emitAnnotations(issues) {
+    const plan = planAnnotations(issues);
+    for (const annotation of plan.annotations) {
+        const properties = {
+            title: annotation.title,
+            file: annotation.file,
+            startLine: annotation.line,
+            ...(annotation.column === undefined ? {} : { startColumn: annotation.column }),
+        };
+        if (annotation.level === 'error')
+            error(annotation.message, properties);
+        else
+            warning(annotation.message, properties);
     }
-    return value;
+    if (plan.totalDropped > 0)
+        info(`+ ${plan.totalDropped} more — see the job summary`);
+    return plan.totalDropped;
 }
-/**
- * Read a boolean input, falling back rather than throwing when it is absent.
- *
- * `core.getBooleanInput` throws on an empty value. Action defaults mean that
- * normally cannot happen, but a hard crash on a missing input is a poor trade
- * for a check whose whole job is to produce a readable failure.
- */
-function readBoolean(name, fallback) {
-    const raw = getInput(name).trim();
-    if (raw === '')
-        return fallback;
-    if (['true', 'True', 'TRUE'].includes(raw))
-        return true;
-    if (['false', 'False', 'FALSE'].includes(raw))
-        return false;
-    throw new ConfigError(`${name} must be true or false, got "${raw}"`);
+function setOutputs(report, body) {
+    setOutput('passed', String(report.passed));
+    setOutput('coverage', JSON.stringify(Object.fromEntries(Object.entries(report.result.coverage).map(([language, c]) => [language, c.percent]))));
+    setOutput('issue-count', String(report.errors.length));
+    setOutput('warning-count', String(report.warnings.length));
+    setOutput('files-scanned', String(report.filesScanned));
+    setOutput('report', truncate(body, MAX_REPORT_OUTPUT));
 }
-function readThreshold() {
-    const raw = getInput('threshold') || '100';
-    const value = Number(raw);
-    if (!Number.isFinite(value) || value < 0 || value > 100) {
-        throw new ConfigError(`threshold must be a number between 0 and 100, got "${raw}"`);
+function failureSummary(errors, shortfalls, inputs) {
+    const parts = [];
+    if (errors > 0)
+        parts.push(`${errors} localization ${errors === 1 ? 'issue' : 'issues'} found`);
+    if (shortfalls > 0) {
+        parts.push(`${shortfalls} ${shortfalls === 1 ? 'language is' : 'languages are'} below the ${inputs.threshold}% threshold`);
     }
-    return value;
-}
-/**
- * Work out what to ratchet against.
- *
- * Pull requests give a base branch. Pushes do not, but `payload.before` is the
- * commit the branch was at, which is the right comparison for a push -- so
- * `on: push` works without anyone having to switch modes.
- */
-function requireBaseRef() {
-    const context = github_context;
-    const fromPullRequest = context.payload.pull_request?.base?.ref;
-    if (typeof fromPullRequest === 'string' && fromPullRequest)
-        return fromPullRequest;
-    if (process.env.GITHUB_BASE_REF)
-        return process.env.GITHUB_BASE_REF;
-    const before = context.payload.before;
-    // All-zeros means the branch did not exist before this push.
-    if (typeof before === 'string' && before && !/^0+$/.test(before))
-        return before;
-    throw new BaseRefError(`Ratchet mode needs a base to compare against, and the "${context.eventName}" event does not provide one.\n\n` +
-        'Either run this on `pull_request`, or set `mode: absolute` for other events:\n\n' +
-        '    - uses: thatswiftguy/xcstrings-lint@v1\n' +
-        '      with:\n' +
-        '        mode: absolute');
+    return `${parts.join('; ')}.`;
 }
 async function writeSummary(markdown) {
     try {
@@ -64194,68 +64557,6 @@ async function writeSummary(markdown) {
         // No $GITHUB_STEP_SUMMARY (a local act run, say). The log still gets it.
         info(markdown);
         core_debug(`could not write the job summary: ${error.message}`);
-    }
-}
-/**
- * Post or update the sticky comment.
- *
- * Never fatal. On a pull request from a fork the token is read-only and this
- * 403s; that is a permissions fact about forks, not a problem with the code
- * under review, so it degrades to a notice and the annotations and job summary
- * carry the result. Switching to `pull_request_target` to get a writable token
- * would run untrusted code with secrets, which is not a trade worth making.
- */
-async function postComment(body) {
-    const context = github_context;
-    const issueNumber = context.payload.pull_request?.number;
-    if (!issueNumber) {
-        info(`no pull request associated with the "${context.eventName}" event; skipping comment`);
-        return;
-    }
-    const token = getInput('github-token');
-    if (!token) {
-        info('no github-token supplied; skipping comment');
-        return;
-    }
-    try {
-        const octokit = getOctokit(token);
-        const { owner, repo } = context.repo;
-        const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-            owner,
-            repo,
-            issue_number: issueNumber,
-            per_page: 100,
-        });
-        const ours = comments.filter((comment) => isOurComment(comment.body));
-        // Prefer one the bot wrote, so a human quoting the marker cannot hijack it.
-        const existing = ours.find((comment) => comment.user?.type === 'Bot') ?? ours[0];
-        if (existing) {
-            await octokit.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-            });
-            core_debug(`updated comment ${existing.id}`);
-        }
-        else {
-            await octokit.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                body,
-            });
-            core_debug('created a new comment');
-        }
-    }
-    catch (error) {
-        const status = error.status;
-        if (status === 403 || status === 404) {
-            info('Cannot comment on this pull request (the token is read-only, which is normal for ' +
-                'forks). Results are in the annotations and the job summary.');
-            return;
-        }
-        warning(`Could not post the comment: ${error.message}`);
     }
 }
 /** Exit 2: the tool is misconfigured, as distinct from failing translations. */
@@ -64274,9 +64575,8 @@ async function main_main() {
         await runAction();
     }
     catch (error) {
-        if (error instanceof ConfigError || error instanceof BaseRefError) {
+        if (error instanceof ConfigError)
             return misconfigured(error.message);
-        }
         if (error instanceof CatalogParseError) {
             return misconfigured(`${error.file}: ${error.message}`);
         }

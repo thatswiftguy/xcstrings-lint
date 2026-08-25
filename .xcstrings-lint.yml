@@ -1,14 +1,10 @@
 # xcstrings-lint's own configuration.
 #
-# This repository has no app of its own. Everything under __tests__/fixtures is
-# deliberately broken test data -- malformed JSON, missing translations, format
-# specifier mismatches -- so it is excluded here. The self-check workflow points
-# at those fixtures on purpose, using its own config files.
+# This repository ships an action, not an app, so the only well-formed catalog
+# it contains is the clean test fixture. Pointing at it means a zero-config run
+# of the action here checks something real -- and keeps the file honest as a
+# worked example. Everything else under __tests__/fixtures is deliberately
+# broken test data; the self-check workflow points at that on purpose, using
+# its own config files.
 paths:
-  - '**/*.xcstrings'
-  - '**/*.strings'
-  - '**/*.stringsdict'
-
-ignore:
-  files:
-    - '__tests__/fixtures/**'
+  - '__tests__/fixtures/project-clean/**/*.xcstrings'

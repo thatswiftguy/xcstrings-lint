@@ -8,8 +8,8 @@ import {
   legacyFileInfo,
   parseStringsFile,
   parseStringsdictFile,
-} from '../src/core/parse-strings.js'
-import { collectLeaves } from '../src/core/value-node.js'
+} from '../src/core/parse/strings.js'
+import { collectLeaves } from '../src/core/parse/value-node.js'
 import { CatalogParseError } from '../src/core/types.js'
 import { fixturePath } from './helpers.js'
 
