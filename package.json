@@ -1,6 +1,6 @@
 {
   "name": "xcstrings-lint",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Catch missing iOS translations before they merge",
   "keywords": [
