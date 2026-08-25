@@ -31,6 +31,10 @@ const TITLES: Record<Issue['class'], string> = {
   stale: 'Stale key',
   formatSpecifier: 'Format specifier mismatch',
   pluralCoverage: 'Incomplete plural coverage',
+  identicalToSource: 'Identical to the source string',
+  duplicateKey: 'Duplicate key',
+  duplicateValue: 'Duplicate source string',
+  orphanKey: 'Orphan key',
 }
 
 export function planAnnotations(

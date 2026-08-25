@@ -1,0 +1,53 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "cart.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Korb" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Basket" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Panier" } }
+      }
+    },
+    "checkout.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Korb" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Basket" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Panier" } }
+      }
+    },
+    "orphan.key" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Verwaist" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Orphelin" } }
+      }
+    },
+    "brand.name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Acme" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Acme" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Acme" } }
+      }
+    },
+    "settings.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erste" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "First" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Premier" } }
+      }
+    },
+    "settings.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Zweite" } },
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Second" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Second" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compareFormatSpecifiers,
   parseFormatSpecifiers,
-} from '../src/core/format-specifiers.js'
+} from '../src/core/parse/format-specifiers.js'
 
 const raws = (s: string) => parseFormatSpecifiers(s).map((f) => f.raw)
 const kinds = (s: string) => parseFormatSpecifiers(s).map((f) => f.kind)

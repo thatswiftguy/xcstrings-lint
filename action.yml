@@ -1,5 +1,5 @@
 name: 'xcstrings-lint'
-description: 'Catch missing iOS translations before they merge'
+description: 'Catch missing, duplicate and broken iOS translations before they merge'
 author: 'thatswiftguy'
 branding:
   icon: 'globe'
@@ -10,12 +10,8 @@ inputs:
     description: 'Path to config file'
     required: false
     default: '.xcstrings-lint.yml'
-  mode:
-    description: 'ratchet | absolute'
-    required: false
-    default: 'ratchet'
   threshold:
-    description: 'Minimum coverage percent per language (absolute mode only)'
+    description: 'Minimum coverage percent per language'
     required: false
     default: '100'
   comment:
@@ -34,6 +30,13 @@ inputs:
     description: 'Token used to post the PR comment'
     required: false
     default: ${{ github.token }}
+  mode:
+    # Declared only so a v1 workflow does not trip GitHub's "unexpected input"
+    # warning. The check has no modes any more -- it always reads the whole
+    # repository -- and setting this logs a notice telling you to delete it.
+    description: 'Removed in v2. Every run checks the whole repository.'
+    required: false
+    deprecationMessage: 'The mode input was removed in v2; every run checks the whole repository.'
 
 outputs:
   passed:
@@ -41,7 +44,11 @@ outputs:
   coverage:
     description: 'JSON object of language -> coverage percent'
   issue-count:
-    description: 'Total number of blocking issues'
+    description: 'Number of blocking (error-severity) issues'
+  warning-count:
+    description: 'Number of non-blocking issues'
+  files-scanned:
+    description: 'How many catalog files were read'
   report:
     description: 'Markdown report body'
 

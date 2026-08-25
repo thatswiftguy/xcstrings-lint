@@ -1,0 +1,4 @@
+# Self-check: globs that deliberately match nothing. The action must fail with
+# exit 2 rather than reporting a pass for a project it never read.
+paths:
+  - '__tests__/fixtures/no-such-directory/**/*.xcstrings'

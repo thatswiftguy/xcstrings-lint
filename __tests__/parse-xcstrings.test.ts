@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseXcstrings } from '../src/core/parse-xcstrings.js'
-import { collectLeaves, leafPathLabel, leafShape } from '../src/core/value-node.js'
+import { parseXcstrings } from '../src/core/parse/xcstrings.js'
+import { collectLeaves, leafPathLabel, leafShape } from '../src/core/parse/value-node.js'
 import { CatalogParseError } from '../src/core/types.js'
 import { loadFixture } from './helpers.js'
 

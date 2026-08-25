@@ -15,7 +15,7 @@ describe('defaults', () => {
     expect(config.paths).toEqual(['**/*.xcstrings', '**/*.strings', '**/*.stringsdict'])
   })
 
-  it('fails on missing, empty and new; warns on needsReview and stale', () => {
+  it('fails on missing, empty, new, duplicate keys and format specifiers', () => {
     expect(config.severity).toEqual({
       missing: 'error',
       empty: 'error',
@@ -24,6 +24,11 @@ describe('defaults', () => {
       stale: 'warn',
       formatSpecifier: 'error',
       pluralCoverage: 'warn',
+      duplicateKey: 'error',
+      duplicateValue: 'warn',
+      orphanKey: 'warn',
+      // Off by default: proper nouns are legitimately identical everywhere.
+      identicalToSource: 'off',
     })
   })
 
@@ -80,9 +85,32 @@ pluralCoverage: warn
     expect(config.severity.needsReview).toBe('warn')
   })
 
-  it('lets a class be turned off entirely', () => {
-    const config = parseConfig('failOn: []\nwarnOn: []\npluralCoverage: off\nformatSpecifiers: off')
+  it('lets every class be turned off entirely', () => {
+    const config = parseConfig(
+      [
+        'failOn: []',
+        'warnOn: []',
+        'pluralCoverage: off',
+        'formatSpecifiers: off',
+        'duplicateKeys: off',
+        'duplicateValues: off',
+        'orphanKeys: off',
+        'identicalToSource: off',
+      ].join('\n'),
+    )
     expect(Object.values(config.severity).every((s) => s === 'off')).toBe(true)
+  })
+
+  it('reads a severity for each of the newer checks', () => {
+    const config = parseConfig(
+      ['duplicateKeys: warn', 'duplicateValues: error', 'orphanKeys: off', 'identicalToSource: error'].join(
+        '\n',
+      ),
+    )
+    expect(config.severity.duplicateKey).toBe('warn')
+    expect(config.severity.duplicateValue).toBe('error')
+    expect(config.severity.orphanKey).toBe('off')
+    expect(config.severity.identicalToSource).toBe('error')
   })
 })
 

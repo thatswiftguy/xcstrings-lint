@@ -24,7 +24,6 @@ jobs:
         uses: ./
         with:
           config: .github/self-check/clean.yml
-          mode: absolute
           threshold: 100
           comment: false
 
@@ -34,6 +33,8 @@ jobs:
             || { echo "::error::expected passed=true, got '${{ steps.check.outputs.passed }}'"; exit 1; }
           test "${{ steps.check.outputs.issue-count }}" = "0" \
             || { echo "::error::expected 0 issues, got '${{ steps.check.outputs.issue-count }}'"; exit 1; }
+          test "${{ steps.check.outputs.files-scanned }}" -gt 0 \
+            || { echo "::error::the globs matched nothing; the check was a no-op"; exit 1; }
 
   finds-every-issue-class:
     name: broken project fails
@@ -45,7 +46,6 @@ jobs:
         uses: ./
         with:
           config: .github/self-check/broken.yml
-          mode: absolute
           threshold: 100
           comment: false
           # The fixtures are broken on purpose; we assert on the outputs
@@ -58,26 +58,42 @@ jobs:
             || { echo "::error::expected passed=false"; exit 1; }
           test "${{ steps.check.outputs.issue-count }}" -gt 0 \
             || { echo "::error::expected issues to be found"; exit 1; }
+          test "${{ steps.check.outputs.warning-count }}" -gt 0 \
+            || { echo "::error::expected warnings to be found"; exit 1; }
           echo '${{ steps.check.outputs.coverage }}' | grep -q '"de"' \
             || { echo "::error::coverage output is missing German"; exit 1; }
 
-      - name: Assert the report mentions the crash-class problem
+      - name: Assert the report names each kind of problem
         run: |
           cat <<'REPORT' > report.md
           ${{ steps.check.outputs.report }}
           REPORT
           grep -q 'xcstrings-lint' report.md || { echo "::error::report is empty"; exit 1; }
-          grep -qi 'format specifier\|expected %lld' report.md \
-            || { echo "::error::report did not mention the format specifier mismatch"; cat report.md; exit 1; }
+          for pattern in 'format specifier\|expected %lld' 'Missing translations' 'Duplicate keys'; do
+            grep -qi "$pattern" report.md \
+              || { echo "::error::report did not mention: $pattern"; cat report.md; exit 1; }
+          done
 
-  ratchet-on-a-real-pull-request:
-    name: ratchet against the base branch
-    if: github.event_name == 'pull_request'
+  refuses-to-pass-on-nothing:
+    name: an empty scan is an error, not a pass
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          # Ratchet mode needs the base branch to compare against.
-          fetch-depth: 0
 
-      - uses: ./
+      # A linter whose globs match no files must say so. Reporting "fully
+      # translated" for a project it never read is the one failure mode that
+      # looks exactly like success.
+      - id: check
+        continue-on-error: true
+        uses: ./
+        with:
+          config: .github/self-check/nothing.yml
+          comment: false
+          annotations: false
+
+      - name: Assert it failed loudly
+        run: |
+          test "${{ steps.check.outcome }}" = "failure" \
+            || { echo "::error::a scan that matched no files reported success"; exit 1; }
+          test "${{ steps.check.outputs.passed }}" != "true" \
+            || { echo "::error::a scan that matched no files set passed=true"; exit 1; }

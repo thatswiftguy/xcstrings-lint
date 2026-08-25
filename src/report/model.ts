@@ -1,31 +1,26 @@
 import type { AnalysisResult } from '../core/analyze.js'
-import type { Mode, RatchetComparison, ThresholdShortfall } from '../core/ratchet.js'
+import type { ThresholdShortfall } from '../core/coverage.js'
 import {
   ALL_ISSUE_CLASSES,
   STATE_ISSUE_CLASSES,
   type Issue,
   type IssueClass,
-  type StateIssueClass,
 } from '../core/types.js'
 
 /** Everything the three reporting surfaces need, computed once by the caller. */
 export interface ReportInput {
-  mode: Mode
   passed: boolean
-  /** Head analysis. In ratchet mode this is the language-unified one. */
   result: AnalysisResult
-  /** Every issue at head, whether or not it gates. */
-  allIssues: Issue[]
-  /**
-   * The issues that actually decide pass or fail: newly introduced ones in
-   * ratchet mode, all errors in absolute mode.
-   */
-  blocking: Issue[]
-  comparison?: RatchetComparison | undefined
-  shortfalls?: ThresholdShortfall[] | undefined
-  threshold?: number | undefined
-  /** Base branch name for display, e.g. `main`. */
-  baseRef?: string | undefined
+  /** Every issue found, errors and warnings together. */
+  issues: Issue[]
+  /** The issues that decide pass or fail. */
+  errors: Issue[]
+  /** Reported, never blocking. */
+  warnings: Issue[]
+  shortfalls: ThresholdShortfall[]
+  threshold: number
+  /** How many files the globs matched. */
+  filesScanned: number
   /** Annotations the per-level cap discarded. */
   annotationsDropped?: number | undefined
 }
@@ -42,13 +37,6 @@ export function percent(value: number): string {
   return `${Number.isInteger(value) ? value : value.toFixed(1)}%`
 }
 
-export function delta(before: number | undefined, after: number): string {
-  if (before === undefined) return 'new'
-  const difference = Math.round((after - before) * 10) / 10
-  if (difference === 0) return '—'
-  return `${difference < 0 ? '🔻' : '🔺'} ${percent(Math.abs(difference))}`
-}
-
 export function table(headers: string[], rows: string[][]): string {
   return [
     `| ${headers.join(' | ')} |`,
@@ -57,61 +45,53 @@ export function table(headers: string[], rows: string[][]): string {
   ].join('\n')
 }
 
+export function pluralise(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
 export interface CoverageRow {
   language: string
-  before?: number | undefined
-  after: number
-  blocking: number
+  percent: number
+  translated: number
+  translatable: number
+  errors: number
 }
 
 export function coverageRows(input: ReportInput): CoverageRow[] {
-  const blockingByLanguage = new Map<string, number>()
-  for (const issue of input.blocking) {
+  const errorsByLanguage = new Map<string, number>()
+  for (const issue of input.errors) {
     if (!issue.language) continue
-    blockingByLanguage.set(issue.language, (blockingByLanguage.get(issue.language) ?? 0) + 1)
+    errorsByLanguage.set(issue.language, (errorsByLanguage.get(issue.language) ?? 0) + 1)
   }
 
-  return input.result.languages.map((language) => ({
-    language,
-    before: input.comparison?.baseCoverage[language]?.percent,
-    after: input.result.coverage[language]?.percent ?? 0,
-    blocking: blockingByLanguage.get(language) ?? 0,
-  }))
+  return input.result.languages.map((language) => {
+    const coverage = input.result.coverage[language]
+    return {
+      language,
+      percent: coverage?.percent ?? 0,
+      translated: coverage?.translated ?? 0,
+      translatable: coverage?.translatable ?? 0,
+      errors: errorsByLanguage.get(language) ?? 0,
+    }
+  })
 }
 
 export function renderCoverageTable(input: ReportInput): string {
   const rows = coverageRows(input)
   if (rows.length === 0) return '_No target languages found._'
 
-  if (input.mode === 'ratchet') {
-    return table(
-      ['Language', 'Before', 'After', 'Δ', 'New issues'],
-      rows.map((row) => [
-        code(row.language),
-        row.before === undefined ? '—' : percent(row.before),
-        percent(row.after),
-        delta(row.before, row.after),
-        row.blocking === 0 ? '0' : `**${row.blocking}**`,
-      ]),
-    )
-  }
-
-  const threshold = input.threshold ?? 100
+  const shortfalls = new Set(input.shortfalls.map((shortfall) => shortfall.language))
   return table(
-    ['Language', 'Coverage', 'Threshold', 'Status'],
+    ['Language', 'Coverage', 'Translated', 'Threshold', 'Status'],
     rows.map((row) => [
       code(row.language),
-      percent(row.after),
-      percent(threshold),
-      row.after >= threshold ? '✓' : '✕ below',
+      percent(row.percent),
+      `${row.translated} / ${row.translatable}`,
+      percent(input.threshold),
+      shortfalls.has(row.language) ? '✕ below' : '✓',
     ]),
   )
 }
-
-export function pluralise(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`
-}
-
 
 /** Section headings. */
 export const CLASS_LABELS: Record<IssueClass, string> = {
@@ -122,6 +102,10 @@ export const CLASS_LABELS: Record<IssueClass, string> = {
   stale: 'Stale keys',
   formatSpecifier: 'Format specifier mismatches',
   pluralCoverage: 'Incomplete plural coverage',
+  identicalToSource: 'Identical to the source string',
+  duplicateKey: 'Duplicate keys',
+  duplicateValue: 'Duplicate source strings',
+  orphanKey: 'Orphan keys',
 }
 
 /** Short forms, so the summary table stays narrow enough to scan. */
@@ -133,6 +117,10 @@ const CLASS_COLUMNS: Record<IssueClass, string> = {
   stale: 'Stale',
   formatSpecifier: 'Format',
   pluralCoverage: 'Plurals',
+  identicalToSource: 'Same as source',
+  duplicateKey: 'Dup key',
+  duplicateValue: 'Dup text',
+  orphanKey: 'Orphan',
 }
 
 /** Beyond this many codes in one cell, list a few and count the rest. */
@@ -152,10 +140,7 @@ export interface LanguageGroup {
  * row saying `de, es, fr, it, ja, ko, pt-BR, zh-Hans -- 3 missing` is the
  * finding; the per-language split only matters when it actually differs.
  */
-export function groupLanguagesByIssues(
-  languages: string[],
-  issues: Issue[],
-): LanguageGroup[] {
+export function groupLanguagesByIssues(languages: string[], issues: Issue[]): LanguageGroup[] {
   const empty = (): Record<IssueClass, number> =>
     Object.fromEntries(ALL_ISSUE_CLASSES.map((c) => [c, 0])) as Record<IssueClass, number>
 
@@ -206,7 +191,9 @@ export function renderLanguageCell(languages: string[], totalLanguages: number):
  * reviewer can act on, "98.8%" is not.
  */
 export function renderLanguageTable(languages: string[], issues: Issue[]): string {
-  const groups = groupLanguagesByIssues(languages, issues)
+  // Languages with nothing wrong are dropped: this is a table of problems, and
+  // a row of dashes saying "nothing here" is a line of reading for no finding.
+  const groups = groupLanguagesByIssues(languages, issues).filter((group) => group.total > 0)
   if (groups.length === 0) return ''
 
   const classes = ALL_ISSUE_CLASSES.filter((c) => groups.some((g) => g.counts[c] > 0))

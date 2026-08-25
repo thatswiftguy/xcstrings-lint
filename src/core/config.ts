@@ -38,6 +38,24 @@ const ALWAYS_IGNORED_FILES = [
 const DEFAULT_FAIL_ON: StateIssueClass[] = ['missing', 'empty', 'new']
 const DEFAULT_WARN_ON: StateIssueClass[] = ['needsReview', 'stale']
 
+/**
+ * Severity of each non-state check when the user says nothing.
+ *
+ * `duplicateKeys` fails: a key declared twice means one of the two definitions
+ * is silently discarded by Xcode, so whatever it said is already lost.
+ * `identicalToSource` is off, because "Cancel" is a legitimate translation into
+ * a dozen languages and a check that cries wolf gets the whole tool switched
+ * off. It is one line to enable when a project wants it.
+ */
+const DEFAULT_CHECK_SEVERITY = {
+  formatSpecifier: 'error',
+  pluralCoverage: 'warn',
+  duplicateKey: 'error',
+  duplicateValue: 'warn',
+  orphanKey: 'warn',
+  identicalToSource: 'off',
+} as const satisfies Partial<Record<IssueClass, Severity>>
+
 const severitySchema = z.enum(['error', 'warn', 'off'])
 const stateClassSchema = z.enum(['missing', 'empty', 'new', 'needsReview', 'stale'])
 
@@ -60,6 +78,10 @@ const fileSchema = z
       .optional(),
     formatSpecifiers: severitySchema.optional(),
     pluralCoverage: severitySchema.optional(),
+    duplicateKeys: severitySchema.optional(),
+    duplicateValues: severitySchema.optional(),
+    orphanKeys: severitySchema.optional(),
+    identicalToSource: severitySchema.optional(),
   })
   .strict()
 
@@ -114,7 +136,10 @@ export function parseConfig(text: string, path = DEFAULT_CONFIG_PATH): ResolvedC
       const line = error.linePos?.[0]?.line
       const where = line === undefined ? '' : ` (line ${line})`
       // yaml repeats "at line N, column M" in the message; we already say it.
-      const detail = (error.message.split('\n')[0] ?? error.message).replace(/ at line \d+, column \d+:?$/, '')
+      const detail = (error.message.split('\n')[0] ?? error.message).replace(
+        / at line \d+, column \d+:?$/,
+        '',
+      )
       throw new ConfigError(`${path}: invalid YAML${where}: ${detail}`)
     }
     throw new ConfigError(`${path}: invalid YAML: ${(error as Error).message}`)
@@ -145,6 +170,16 @@ export function parseConfig(text: string, path = DEFAULT_CONFIG_PATH): ResolvedC
   return { ...resolve(config), source: path }
 }
 
+/** Options that are configured at the top level, not inside failOn/warnOn. */
+const TOP_LEVEL_CHECKS = [
+  'formatSpecifiers',
+  'pluralCoverage',
+  'duplicateKeys',
+  'duplicateValues',
+  'orphanKeys',
+  'identicalToSource',
+]
+
 function formatIssues(path: string, error: z.ZodError): string {
   const lines = error.issues.map((issue) => {
     const where = issue.path.length > 0 ? issue.path.join('.') : '(root)'
@@ -156,7 +191,7 @@ function formatIssues(path: string, error: z.ZodError): string {
       issue.code === 'invalid_enum_value'
     ) {
       const received = String((issue as { received?: unknown }).received ?? '')
-      if (received === 'formatSpecifiers' || received === 'pluralCoverage') {
+      if (TOP_LEVEL_CHECKS.includes(received)) {
         message = `"${received}" is configured with the top-level "${received}:" option, not in ${where.split('.')[0]}`
       }
     }
@@ -179,8 +214,13 @@ function resolve(config: ConfigFile): ResolvedConfig {
     if (failOn.includes(issueClass)) severity[issueClass] = 'error'
     else if (warnOn.includes(issueClass)) severity[issueClass] = 'warn'
   }
-  severity.formatSpecifier = config.formatSpecifiers ?? 'error'
-  severity.pluralCoverage = config.pluralCoverage ?? 'warn'
+
+  severity.formatSpecifier = config.formatSpecifiers ?? DEFAULT_CHECK_SEVERITY.formatSpecifier
+  severity.pluralCoverage = config.pluralCoverage ?? DEFAULT_CHECK_SEVERITY.pluralCoverage
+  severity.duplicateKey = config.duplicateKeys ?? DEFAULT_CHECK_SEVERITY.duplicateKey
+  severity.duplicateValue = config.duplicateValues ?? DEFAULT_CHECK_SEVERITY.duplicateValue
+  severity.orphanKey = config.orphanKeys ?? DEFAULT_CHECK_SEVERITY.orphanKey
+  severity.identicalToSource = config.identicalToSource ?? DEFAULT_CHECK_SEVERITY.identicalToSource
 
   return {
     paths: config.paths ?? DEFAULT_PATHS,

@@ -29,12 +29,11 @@ export function renderSummary(input: ReportInput): string {
     '',
   ]
 
-  if (input.blocking.length > 0) {
-    const heading = input.mode === 'ratchet' ? 'New issues' : 'Issues'
-    lines.push(`### ${heading}`, '')
-    const grouped = renderLanguageTable(languages, input.blocking)
+  if (input.errors.length > 0) {
+    lines.push('### Issues', '')
+    const grouped = renderLanguageTable(languages, input.errors)
     if (grouped) lines.push(grouped, '')
-    for (const section of renderKeySections(input.blocking, languages, MAX_DETAIL_ROWS)) {
+    for (const section of renderKeySections(input.errors, languages, MAX_DETAIL_ROWS)) {
       lines.push(section, '')
     }
   }
@@ -44,26 +43,13 @@ export function renderSummary(input: ReportInput): string {
   // changed in front of them.
   lines.push('### Coverage', '', renderCoverageTable(input), '')
 
-  const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue))
-  if (carried.length > 0) {
+  if (input.warnings.length > 0) {
     lines.push(
-      `<details><summary>Pre-existing issues · ${carried.length}</summary>`,
+      `<details><summary>Warnings · ${input.warnings.length}</summary>`,
       '',
-      renderLanguageTable(languages, carried),
+      renderLanguageTable(languages, input.warnings),
       '',
-      ...renderKeySections(carried, languages, MAX_DETAIL_ROWS, { collapsed: false }),
-      '',
-      '</details>',
-      '',
-    )
-  }
-
-  const fixed = input.comparison?.fixedIssues ?? []
-  if (fixed.length > 0) {
-    lines.push(
-      `<details><summary>Fixed on this branch · ${fixed.length}</summary>`,
-      '',
-      ...renderKeySections(fixed, languages, MAX_DETAIL_ROWS, { collapsed: false }),
+      ...renderKeySections(input.warnings, languages, MAX_DETAIL_ROWS, { collapsed: false }),
       '',
       '</details>',
       '',
@@ -84,25 +70,25 @@ export function renderSummary(input: ReportInput): string {
 }
 
 function describeRun(input: ReportInput): string[] {
-  const base = input.baseRef ? code(input.baseRef) : 'the base branch'
-  const catalogs = pluralise(input.result.catalogs.length, 'catalog')
-  const languages = pluralise(input.result.languages.length, 'language')
+  const scope =
+    `Checked ${pluralise(input.filesScanned, 'file')} — ` +
+    `${pluralise(input.result.catalogs.length, 'catalog')} across ` +
+    `${pluralise(input.result.languages.length, 'language')}.`
 
-  if (input.mode === 'ratchet') {
-    const headline =
-      input.blocking.length === 0
-        ? `No new localization issues vs ${base}.`
-        : `${pluralise(input.blocking.length, 'new issue')} vs ${base}.`
-    return [headline, '', `Checked ${catalogs} across ${languages}.`]
-  }
-
-  const threshold = input.threshold ?? 100
-  const shortfalls = input.shortfalls ?? []
+  const shortfalls = input.shortfalls
   const headline =
-    shortfalls.length === 0
-      ? `Every language is at or above ${threshold}% coverage.`
-      : `${pluralise(shortfalls.length, 'language')} below the ${threshold}% threshold.`
-  return [headline, '', `Checked ${catalogs} across ${languages}.`]
+    input.errors.length === 0 && shortfalls.length === 0
+      ? `Every language is at or above ${input.threshold}% coverage.`
+      : [
+          input.errors.length > 0 ? pluralise(input.errors.length, 'blocking issue') : '',
+          shortfalls.length > 0
+            ? `${pluralise(shortfalls.length, 'language')} below the ${input.threshold}% threshold`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(', ') + '.'
+
+  return [headline, '', scope]
 }
 
 /**

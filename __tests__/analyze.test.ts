@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { analyze } from '../src/core/analyze.js'
 import { defaultConfig, parseConfig, type ResolvedConfig } from '../src/core/config.js'
-import { parseXcstrings } from '../src/core/parse-xcstrings.js'
+import { parseXcstrings } from '../src/core/parse/xcstrings.js'
 import type { Issue } from '../src/core/types.js'
 import { loadFixture } from './helpers.js'
 
