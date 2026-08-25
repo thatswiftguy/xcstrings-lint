@@ -6,6 +6,7 @@ import {
   renderCoverageTable,
   renderKeySections,
   renderLanguageTable,
+  warningIssues,
   type ReportInput,
 } from './model.js'
 
@@ -45,9 +46,10 @@ export function renderSummary(input: ReportInput): string {
   lines.push('### Coverage', '', renderCoverageTable(input), '')
 
   const carried = carriedIssues(input)
+  const warnings = warningIssues(input)
   lines.push(
     ...section(input, carried, `Pre-existing issues · ${carried.length}`),
-    ...section(input, input.warnings, `Warnings · ${input.warnings.length}`),
+    ...section(input, warnings, `Warnings · ${warnings.length}`),
     ...section(input, input.fixed, `Fixed by this change · ${input.fixed.length}`),
   )
 

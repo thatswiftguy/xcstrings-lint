@@ -50,7 +50,7 @@ async function runAction(): Promise<void> {
 
   const report = result.report
   if (inputs.annotations) {
-    const dropped = emitAnnotations([...report.blocking, ...report.warnings])
+    const dropped = emitAnnotations([...report.blocking, ...report.nonBlocking])
     if (dropped > 0) report.annotationsDropped = dropped
   }
 
@@ -101,7 +101,7 @@ function setOutputs(report: LintResult['report'], body: string): void {
     ),
   )
   core.setOutput('issue-count', String(report.blocking.length))
-  core.setOutput('warning-count', String(report.warnings.length))
+  core.setOutput('warning-count', String(report.nonBlocking.length))
   core.setOutput('pre-existing-count', String(report.preExisting.length))
   core.setOutput('files-scanned', String(report.filesScanned))
   core.setOutput('report', truncate(body, MAX_REPORT_OUTPUT))

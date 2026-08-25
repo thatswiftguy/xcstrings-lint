@@ -13,6 +13,7 @@ import {
   renderKeySections,
   renderLanguageCell,
   renderLanguageTable,
+  warningIssues,
 } from '../src/report/model.js'
 import type { ReportInput } from '../src/report/model.js'
 import type { Issue } from '../src/core/types.js'
@@ -158,7 +159,7 @@ describe('annotations', () => {
   })
 
   it('has a title for every issue class', () => {
-    const warnings = warningScenario().warnings
+    const warnings = warningScenario().nonBlocking
     expect(warnings.length).toBeGreaterThan(0)
     for (const annotation of planAnnotations(warnings).annotations) {
       expect(annotation.title).not.toMatch(/undefined/)
@@ -371,13 +372,13 @@ describe('sticky comment', () => {
   it('offers the warnings as an expandable section', () => {
     const input = warningScenario()
     expect(input.blocking).toEqual([])
-    expect(input.warnings.length).toBeGreaterThan(0)
+    expect(warningIssues(input).length).toBeGreaterThan(0)
 
     const body = renderComment(input)
     // Still a pass: warnings never decide the verdict.
     expect(body).toContain('**passed**')
     expect(body).toContain(
-      `<details><summary><b>Warnings</b> · ${input.warnings.length} — not blocking</summary>`,
+      `<details><summary><b>Warnings</b> · ${warningIssues(input).length} — not blocking</summary>`,
     )
   })
 

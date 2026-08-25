@@ -5,7 +5,7 @@ import { defaultConfig, type ResolvedConfig } from '../src/core/config.js'
 import { parseXcstrings } from '../src/core/parse/xcstrings.js'
 import { buildReport } from '../src/lint.js'
 import { renderComment } from '../src/report/comment.js'
-import { carriedIssues } from '../src/report/model.js'
+import { carriedIssues, warningIssues } from '../src/report/model.js'
 import type { Issue } from '../src/core/types.js'
 
 /**
@@ -170,8 +170,37 @@ describe('what blocks', () => {
 
   it('never files a pre-existing error under warnings', () => {
     const input = report('ratchet')
-    expect(input.warnings.every((issue) => issue.severity === 'warn')).toBe(true)
+    expect(warningIssues(input).every((issue) => issue.severity === 'warn')).toBe(true)
     expect(keysOf(input.preExisting)).toEqual(['old_gap'])
+  })
+
+  it('counts non-blocking issues honestly when they are all pre-existing', () => {
+    // Regression: `warnings` used to mean "non-blocking AND not pre-existing",
+    // so a pull request that touched no catalogs reported zero warnings while
+    // six real ones sat in the report. CI caught it; the unit suite did not,
+    // because every fixture here had at least one brand new warning.
+    const unchanged = {
+      done: { en: 'D', de: 'De' },
+      // Only a German entry: an orphan key, which is a warning, not an error.
+      orphan: { en: null, de: 'Weg' },
+    }
+    const { head, comparison } = compare({ base: unchanged, head: unchanged })
+    const input = buildReport(head, {
+      config,
+      mode: 'full',
+      threshold: 100,
+      filesScanned: 1,
+      comparison,
+    })
+
+    expect(keysOf(input.nonBlocking)).toEqual(['orphan'])
+    expect(keysOf(input.preExisting)).toEqual(['orphan'])
+    // The same issue is in both partitions, and neither count hides it.
+    expect(input.nonBlocking).toHaveLength(1)
+    // It renders under "pre-existing", not "warnings" -- a display choice that
+    // must not leak back into the counts.
+    expect(keysOf(carriedIssues(input))).toEqual(['orphan'])
+    expect(warningIssues(input)).toEqual([])
   })
 
   it('counts the backlog honestly in both modes', () => {

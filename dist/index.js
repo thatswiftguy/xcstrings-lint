@@ -57527,15 +57527,21 @@ function pluralise(count, singular, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
 }
 /**
- * Pre-existing issues worth listing on their own.
+ * How the two partitions turn into the sections a reader sees.
  *
- * Only the ones that are not already in the blocking list. In full mode an old
- * problem still blocks, and printing it a second time under "not introduced by
- * this change" would read as an excuse for something the run just failed on.
+ * `blocking` and `preExisting` overlap freely -- an old problem still blocks in
+ * full mode -- so the display buckets are cut from the non-blocking list and
+ * are guaranteed not to print the same issue twice.
  */
+/** Non-blocking issues the base branch already had. */
 function carriedIssues(input) {
-    const blocking = new Set(input.blocking);
-    return input.preExisting.filter((issue) => !blocking.has(issue));
+    const preExisting = new Set(input.preExisting);
+    return input.nonBlocking.filter((issue) => preExisting.has(issue));
+}
+/** Non-blocking issues this change is responsible for. */
+function warningIssues(input) {
+    const preExisting = new Set(input.preExisting);
+    return input.nonBlocking.filter((issue) => !preExisting.has(issue));
 }
 function coverageRows(input) {
     const errorsByLanguage = new Map();
@@ -57766,7 +57772,7 @@ function renderComment(input) {
     // count, and pre-existing problems are kept apart from warnings. A reviewer
     // who wants to know what else is off should not have to guess which of these
     // two very different things they are looking at.
-    lines.push(...collapsedSection(input, carriedIssues(input), 'Pre-existing issues', 'not introduced by this change'), ...collapsedSection(input, input.warnings, 'Warnings', 'not blocking'));
+    lines.push(...collapsedSection(input, carriedIssues(input), 'Pre-existing issues', 'not introduced by this change'), ...collapsedSection(input, warningIssues(input), 'Warnings', 'not blocking'));
     if (input.fixed.length > 0) {
         lines.push(`✅ ${pluralise(input.fixed.length, 'issue')} fixed by this change.`, '');
     }
@@ -64583,8 +64589,14 @@ function buildReport(result, options) {
     const gated = mode === 'ratchet' && comparison ? comparison.newIssues : result.issues;
     const blocking = gated.filter((issue) => issue.severity === 'error');
     const blockingSet = new Set(blocking);
-    const nonBlocking = result.issues.filter((issue) => !blockingSet.has(issue));
-    const preExistingSet = new Set(comparison?.preExisting ?? []);
+    // Two partitions of the same list, and deliberately kept independent of each
+    // other. "Does it block?" and "was it already there?" are different
+    // questions, and every field below answers exactly one of them. An earlier
+    // cut folded them together -- warnings meant "non-blocking and not
+    // pre-existing" -- and the counts built on it were quietly wrong: a run with
+    // six warnings the base also had reported zero warnings. Which bucket the
+    // report *displays* something in is a rendering decision, made in
+    // `carriedIssues` and `warningIssues`, never baked into the data.
     return {
         mode,
         // Coverage at threshold is not the whole story: a format-specifier mismatch
@@ -64593,12 +64605,7 @@ function buildReport(result, options) {
         result,
         issues: result.issues,
         blocking,
-        // Split so the report never files a pre-existing problem under "warnings".
-        warnings: nonBlocking.filter((issue) => !preExistingSet.has(issue)),
-        // The honest set: everything the base branch had too, blocking or not. What
-        // the report *shows* under "pre-existing" is the non-blocking part of it --
-        // see `carriedIssues` -- but the count has to be the truth, because in full
-        // mode every one of these blocks and reporting zero would be a lie.
+        nonBlocking: result.issues.filter((issue) => !blockingSet.has(issue)),
         preExisting: comparison?.preExisting ?? [],
         newIssues: comparison?.newIssues ?? [],
         fixed: comparison?.fixed ?? [],
@@ -64707,7 +64714,8 @@ function renderSummary(input) {
     // changed in front of them.
     lines.push('### Coverage', '', renderCoverageTable(input), '');
     const carried = carriedIssues(input);
-    lines.push(...section(input, carried, `Pre-existing issues · ${carried.length}`), ...section(input, input.warnings, `Warnings · ${input.warnings.length}`), ...section(input, input.fixed, `Fixed by this change · ${input.fixed.length}`));
+    const warnings = warningIssues(input);
+    lines.push(...section(input, carried, `Pre-existing issues · ${carried.length}`), ...section(input, warnings, `Warnings · ${warnings.length}`), ...section(input, input.fixed, `Fixed by this change · ${input.fixed.length}`));
     if (input.annotationsDropped) {
         lines.push(`_${input.annotationsDropped} annotations were not shown inline; GitHub caps them per step._`, '');
     }
@@ -64813,7 +64821,7 @@ async function runAction() {
     }
     const report = result.report;
     if (inputs.annotations) {
-        const dropped = emitAnnotations([...report.blocking, ...report.warnings]);
+        const dropped = emitAnnotations([...report.blocking, ...report.nonBlocking]);
         if (dropped > 0)
             report.annotationsDropped = dropped;
     }
@@ -64858,7 +64866,7 @@ function setOutputs(report, body) {
     setOutput('passed', String(report.passed));
     setOutput('coverage', JSON.stringify(Object.fromEntries(Object.entries(report.result.coverage).map(([language, c]) => [language, c.percent]))));
     setOutput('issue-count', String(report.blocking.length));
-    setOutput('warning-count', String(report.warnings.length));
+    setOutput('warning-count', String(report.nonBlocking.length));
     setOutput('pre-existing-count', String(report.preExisting.length));
     setOutput('files-scanned', String(report.filesScanned));
     setOutput('report', truncate(body, MAX_REPORT_OUTPUT));

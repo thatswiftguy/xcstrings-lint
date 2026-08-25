@@ -183,10 +183,15 @@ export function buildReport(result: AnalysisResult, options: BuildReportOptions)
   const gated = mode === 'ratchet' && comparison ? comparison.newIssues : result.issues
   const blocking = gated.filter((issue) => issue.severity === 'error')
   const blockingSet = new Set(blocking)
-  const nonBlocking = result.issues.filter((issue) => !blockingSet.has(issue))
 
-  const preExistingSet = new Set(comparison?.preExisting ?? [])
-
+  // Two partitions of the same list, and deliberately kept independent of each
+  // other. "Does it block?" and "was it already there?" are different
+  // questions, and every field below answers exactly one of them. An earlier
+  // cut folded them together -- warnings meant "non-blocking and not
+  // pre-existing" -- and the counts built on it were quietly wrong: a run with
+  // six warnings the base also had reported zero warnings. Which bucket the
+  // report *displays* something in is a rendering decision, made in
+  // `carriedIssues` and `warningIssues`, never baked into the data.
   return {
     mode,
     // Coverage at threshold is not the whole story: a format-specifier mismatch
@@ -195,12 +200,7 @@ export function buildReport(result: AnalysisResult, options: BuildReportOptions)
     result,
     issues: result.issues,
     blocking,
-    // Split so the report never files a pre-existing problem under "warnings".
-    warnings: nonBlocking.filter((issue) => !preExistingSet.has(issue)),
-    // The honest set: everything the base branch had too, blocking or not. What
-    // the report *shows* under "pre-existing" is the non-blocking part of it --
-    // see `carriedIssues` -- but the count has to be the truth, because in full
-    // mode every one of these blocks and reporting zero would be a lie.
+    nonBlocking: result.issues.filter((issue) => !blockingSet.has(issue)),
     preExisting: comparison?.preExisting ?? [],
     newIssues: comparison?.newIssues ?? [],
     fixed: comparison?.fixed ?? [],

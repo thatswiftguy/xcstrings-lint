@@ -4,6 +4,7 @@ import {
   pluralise,
   renderKeySections,
   renderLanguageTable,
+  warningIssues,
   type ReportInput,
 } from './model.js'
 
@@ -47,7 +48,7 @@ export function renderComment(input: ReportInput): string {
   // two very different things they are looking at.
   lines.push(
     ...collapsedSection(input, carriedIssues(input), 'Pre-existing issues', 'not introduced by this change'),
-    ...collapsedSection(input, input.warnings, 'Warnings', 'not blocking'),
+    ...collapsedSection(input, warningIssues(input), 'Warnings', 'not blocking'),
   )
 
   if (input.fixed.length > 0) {

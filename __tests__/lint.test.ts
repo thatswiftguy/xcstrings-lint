@@ -185,7 +185,7 @@ describe('the verdict', () => {
       },
       (dir) => {
         const result = run(dir)
-        expect(result.report.warnings.map((i) => i.class)).toEqual(['needsReview'])
+        expect(result.report.nonBlocking.map((i) => i.class)).toEqual(['needsReview'])
         expect(result.report.blocking).toEqual([])
         expect(result.report.passed).toBe(true)
         expect(exitCodeFor(result)).toBe(0)
@@ -216,8 +216,8 @@ describe('the verdict', () => {
   it('splits issues into the blocking ones and the rest', () => {
     const { report } = run(BROKEN)
     expect(report.blocking.every((i) => i.severity === 'error')).toBe(true)
-    expect(report.warnings.every((i) => i.severity === 'warn')).toBe(true)
-    expect(report.blocking.length + report.warnings.length).toBe(report.issues.length)
+    expect(report.nonBlocking.every((i) => i.severity === 'warn')).toBe(true)
+    expect(report.blocking.length + report.nonBlocking.length).toBe(report.issues.length)
   })
 })
 

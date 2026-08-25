@@ -17,12 +17,9 @@ export interface ReportInput {
   issues: Issue[]
   /** The issues that decide pass or fail. */
   blocking: Issue[]
-  /** Non-blocking, and not carried over from the base branch. */
-  warnings: Issue[]
-  /**
-   * Every issue the base branch has too, blocking or not. Use `carriedIssues`
-   * for the subset a report should list separately.
-   */
+  /** Everything else found at head. Reported, never blocking. */
+  nonBlocking: Issue[]
+  /** Every issue the base branch has too, blocking or not. */
   preExisting: Issue[]
   /** Issues this change introduced, blocking or not. Empty with no base. */
   newIssues: Issue[]
@@ -65,15 +62,23 @@ export function pluralise(count: number, singular: string, plural = `${singular}
 }
 
 /**
- * Pre-existing issues worth listing on their own.
+ * How the two partitions turn into the sections a reader sees.
  *
- * Only the ones that are not already in the blocking list. In full mode an old
- * problem still blocks, and printing it a second time under "not introduced by
- * this change" would read as an excuse for something the run just failed on.
+ * `blocking` and `preExisting` overlap freely -- an old problem still blocks in
+ * full mode -- so the display buckets are cut from the non-blocking list and
+ * are guaranteed not to print the same issue twice.
  */
+
+/** Non-blocking issues the base branch already had. */
 export function carriedIssues(input: ReportInput): Issue[] {
-  const blocking = new Set(input.blocking)
-  return input.preExisting.filter((issue) => !blocking.has(issue))
+  const preExisting = new Set(input.preExisting)
+  return input.nonBlocking.filter((issue) => preExisting.has(issue))
+}
+
+/** Non-blocking issues this change is responsible for. */
+export function warningIssues(input: ReportInput): Issue[] {
+  const preExisting = new Set(input.preExisting)
+  return input.nonBlocking.filter((issue) => !preExisting.has(issue))
 }
 
 export interface CoverageRow {
