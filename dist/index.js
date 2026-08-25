@@ -63728,14 +63728,8 @@ function renderLanguageTable(languages, issues) {
     ]);
     return table(headers, rows);
 }
-/**
- * One collapsed block per issue class, naming the keys involved.
- *
- * Split by class rather than one flat list because the classes need different
- * fixes: a missing key needs a translator, a format specifier mismatch needs a
- * developer, and mixing them buries the second in the first.
- */
-function renderKeySections(issues, languages, maxRows) {
+function renderKeySections(issues, languages, maxRows, options = {}) {
+    const collapsed = options.collapsed ?? true;
     const sections = [];
     for (const issueClass of ALL_ISSUE_CLASSES) {
         const forClass = issues.filter((issue) => issue.class === issueClass);
@@ -63744,13 +63738,15 @@ function renderKeySections(issues, languages, maxRows) {
         const body = STATE_ISSUE_CLASSES.includes(issueClass)
             ? renderKeyTable(forClass, languages, maxRows)
             : renderMessageList(forClass, maxRows);
-        sections.push([
-            `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
-            '',
-            body,
-            '',
-            '</details>',
-        ].join('\n'));
+        sections.push(collapsed
+            ? [
+                `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
+                '',
+                body,
+                '',
+                '</details>',
+            ].join('\n')
+            : [`**${CLASS_LABELS[issueClass]}** · ${forClass.length}`, '', body].join('\n'));
     }
     return sections;
 }
@@ -63806,6 +63802,8 @@ const COMMENT_MARKER = '<!-- xcstrings-lint -->';
 /** GitHub rejects comment bodies over 65536 characters. Leave headroom. */
 const MAX_COMMENT_LENGTH = 60000;
 const MAX_DETAIL_ROWS = 40;
+/** The backlog is context, not the finding -- show less of it. */
+const MAX_PRE_EXISTING_ROWS = 20;
 /**
  * Render the sticky comment.
  *
@@ -63826,16 +63824,26 @@ function renderComment(input) {
     const fixed = input.comparison?.fixedIssues.length ?? 0;
     if (fixed > 0)
         lines.push(`✅ ${pluralise(fixed, 'issue')} fixed on this branch.`, '');
-    const carried = input.allIssues.length - input.blocking.length;
-    if (input.mode === 'ratchet' && carried > 0) {
-        lines.push(`<sub>${pluralise(carried, 'pre-existing issue')} not counted against this PR.</sub>`, '');
+    // The backlog gets a section of its own rather than a bare count. It is not
+    // this PR's to fix, so it stays collapsed and out of the headline -- but a
+    // reviewer who wants to know what is already broken should not have to go
+    // digging through the job summary to find out.
+    const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue));
+    if (input.mode === 'ratchet' && carried.length > 0) {
+        const body = [
+            renderLanguageTable(input.result.languages, carried),
+            ...renderKeySections(carried, input.result.languages, MAX_PRE_EXISTING_ROWS, {
+                collapsed: false,
+            }),
+        ].filter(Boolean);
+        lines.push(`<details><summary><b>Pre-existing issues</b> · ${carried.length} — not introduced by this PR</summary>`, '', body.join('\n\n'), '', '</details>', '');
     }
     lines.push(footer(input));
     return truncate(lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd());
 }
 function headline(input) {
     const base = input.baseRef ? code(input.baseRef) : 'the base branch';
-    const keys = new Set(input.blocking.map((issue) => `${issue.catalog} ${issue.key}`)).size;
+    const keys = new Set(input.blocking.map((issue) => JSON.stringify([issue.catalog, issue.key]))).size;
     const languages = new Set(input.blocking.map((issue) => issue.language).filter(Boolean)).size;
     if (input.mode === 'ratchet') {
         if (input.blocking.length === 0)
@@ -63910,11 +63918,11 @@ function renderSummary(input) {
     lines.push('### Coverage', '', renderCoverageTable(input), '');
     const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue));
     if (carried.length > 0) {
-        lines.push(`<details><summary>Pre-existing issues · ${carried.length}</summary>`, '', renderLanguageTable(languages, carried), '', ...renderKeySections(carried, languages, summary_MAX_DETAIL_ROWS), '', '</details>', '');
+        lines.push(`<details><summary>Pre-existing issues · ${carried.length}</summary>`, '', renderLanguageTable(languages, carried), '', ...renderKeySections(carried, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
     }
     const fixed = input.comparison?.fixedIssues ?? [];
     if (fixed.length > 0) {
-        lines.push(`<details><summary>Fixed on this branch · ${fixed.length}</summary>`, '', ...renderKeySections(fixed, languages, summary_MAX_DETAIL_ROWS), '', '</details>', '');
+        lines.push(`<details><summary>Fixed on this branch · ${fixed.length}</summary>`, '', ...renderKeySections(fixed, languages, summary_MAX_DETAIL_ROWS, { collapsed: false }), '', '</details>', '');
     }
     if (input.annotationsDropped) {
         lines.push(`_${input.annotationsDropped} annotations were not shown inline; GitHub caps them per step._`, '');

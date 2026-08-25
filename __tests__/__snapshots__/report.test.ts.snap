@@ -112,6 +112,36 @@ No new localization issues vs \`main\`.
 <sub>Mode: \`ratchet\` · <!-- xcstrings-lint --></sub>"
 `;
 
+exports[`sticky comment > renders a passing report that carries a backlog 1`] = `
+"### 🌍 xcstrings-lint — **passed**
+
+No new localization issues vs \`main\`.
+
+<details><summary><b>Pre-existing issues</b> · 7 — not introduced by this PR</summary>
+
+| Languages | Missing | Empty | Total |
+|---|---|---|---|
+| \`fr\`, \`ja\` | 2 | 1 | **3** |
+| \`de\` | — | 1 | **1** |
+
+**Missing translations** · 4
+
+| Key | Languages |
+|---|---|
+| \`old_a\` | \`fr\`, \`ja\` |
+| \`old_b\` | \`fr\`, \`ja\` |
+
+**Empty values** · 3
+
+| Key | Languages |
+|---|---|
+| \`old_empty\` | all 3 languages |
+
+</details>
+
+<sub>Mode: \`ratchet\` · <!-- xcstrings-lint --></sub>"
+`;
+
 exports[`sticky comment > renders an absolute-mode report 1`] = `
 "### 🌍 xcstrings-lint — **failed**
 

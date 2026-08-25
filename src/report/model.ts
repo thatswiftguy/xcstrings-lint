@@ -228,11 +228,22 @@ export function renderLanguageTable(languages: string[], issues: Issue[]): strin
  * fixes: a missing key needs a translator, a format specifier mismatch needs a
  * developer, and mixing them buries the second in the first.
  */
+export interface KeySectionOptions {
+  /**
+   * Wrap each class in its own `<details>`. Turn this off when the sections
+   * already sit inside one -- GitHub renders nested `<details>` but it reads
+   * like a filing cabinet inside a filing cabinet.
+   */
+  collapsed?: boolean
+}
+
 export function renderKeySections(
   issues: Issue[],
   languages: string[],
   maxRows: number,
+  options: KeySectionOptions = {},
 ): string[] {
+  const collapsed = options.collapsed ?? true
   const sections: string[] = []
 
   for (const issueClass of ALL_ISSUE_CLASSES) {
@@ -244,13 +255,15 @@ export function renderKeySections(
       : renderMessageList(forClass, maxRows)
 
     sections.push(
-      [
-        `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
-        '',
-        body,
-        '',
-        '</details>',
-      ].join('\n'),
+      collapsed
+        ? [
+            `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
+            '',
+            body,
+            '',
+            '</details>',
+          ].join('\n')
+        : [`**${CLASS_LABELS[issueClass]}** · ${forClass.length}`, '', body].join('\n'),
     )
   }
 
