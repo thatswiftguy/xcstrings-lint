@@ -63634,99 +63634,164 @@ function renderCoverageTable(input) {
         row.after >= threshold ? '✓' : '✕ below',
     ]));
 }
-const CELL = {
-    missing: '✕ missing',
-    empty: '⚠ empty',
-    new: '⚠ new',
-    needsReview: '⚠ review',
-    stale: '⚠ stale',
-};
-const isStateClass = (issue) => STATE_ISSUE_CLASSES.includes(issue.class);
-/** Above this, a key-by-language matrix is wider than it is useful. */
-const MAX_MATRIX_LANGUAGES = 6;
-/**
- * Render the per-key detail.
- *
- * A key-by-language matrix is the most scannable form when there are only a few
- * languages -- one row per key tells you at a glance whether a string is missing
- * everywhere or just in one place. Past a handful of languages the table gets
- * too wide to read in a PR comment, so it degrades to a flat list.
- */
-function renderIssueDetail(issues, maxRows) {
-    if (issues.length === 0)
-        return '';
-    const stateIssues = issues.filter(isStateClass);
-    const structural = issues.filter((issue) => !isStateClass(issue));
-    // A stale key is dead in every language at once, so it has no language column
-    // to sit in and gets its own list rather than a row of identical cells.
-    const keyLevel = stateIssues.filter((issue) => !issue.language);
-    const pairs = stateIssues.filter((issue) => issue.language);
-    const sections = [];
-    const languages = [...new Set(pairs.map((issue) => issue.language))].sort();
-    const catalogs = new Set(pairs.map((issue) => issue.catalog));
-    if (pairs.length > 0 && languages.length <= MAX_MATRIX_LANGUAGES) {
-        const rows = new Map();
-        const order = [];
-        for (const issue of pairs) {
-            const id = JSON.stringify([issue.catalog, issue.key]);
-            let row = rows.get(id);
-            if (!row) {
-                row = { catalog: issue.catalog, key: issue.key, cells: new Map() };
-                rows.set(id, row);
-                order.push(id);
-            }
-            row.cells.set(issue.language, issue.class);
-        }
-        const shown = order.slice(0, maxRows);
-        // Only show the catalog column when more than one file is involved,
-        // otherwise it is the same string repeated down the table.
-        const showCatalog = catalogs.size > 1;
-        const headers = [...(showCatalog ? ['Catalog'] : []), 'Key', ...languages];
-        const body = shown.map((id) => {
-            const row = rows.get(id);
-            return [
-                ...(showCatalog ? [code(row.catalog)] : []),
-                code(row.key),
-                ...languages.map((language) => {
-                    const issueClass = row.cells.get(language);
-                    return issueClass ? CELL[issueClass] : '✓';
-                }),
-            ];
-        });
-        sections.push(table(headers, body));
-        if (order.length > shown.length) {
-            sections.push(`_+ ${pluralise(order.length - shown.length, 'more key')}._`);
-        }
-    }
-    else if (pairs.length > 0) {
-        const shown = pairs.slice(0, maxRows);
-        sections.push(shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`).join('\n'));
-        if (pairs.length > shown.length) {
-            sections.push(`_+ ${pairs.length - shown.length} more._`);
-        }
-    }
-    if (keyLevel.length > 0) {
-        const shown = keyLevel.slice(0, maxRows);
-        sections.push([
-            ...shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`),
-            ...(keyLevel.length > shown.length ? [`_+ ${keyLevel.length - shown.length} more._`] : []),
-        ].join('\n'));
-    }
-    if (structural.length > 0) {
-        const shown = structural.slice(0, maxRows);
-        sections.push([
-            '**Structural problems**',
-            '',
-            ...shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`),
-            ...(structural.length > shown.length
-                ? [`_+ ${structural.length - shown.length} more._`]
-                : []),
-        ].join('\n'));
-    }
-    return sections.filter(Boolean).join('\n\n');
-}
 function pluralise(count, singular, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
+}
+/** Section headings. */
+const CLASS_LABELS = {
+    missing: 'Missing translations',
+    empty: 'Empty values',
+    new: 'Untranslated (new)',
+    needsReview: 'Needs review',
+    stale: 'Stale keys',
+    formatSpecifier: 'Format specifier mismatches',
+    pluralCoverage: 'Incomplete plural coverage',
+};
+/** Short forms, so the summary table stays narrow enough to scan. */
+const CLASS_COLUMNS = {
+    missing: 'Missing',
+    empty: 'Empty',
+    new: 'New',
+    needsReview: 'Review',
+    stale: 'Stale',
+    formatSpecifier: 'Format',
+    pluralCoverage: 'Plurals',
+};
+/** Beyond this many codes in one cell, list a few and count the rest. */
+const MAX_LANGUAGES_PER_CELL = 8;
+/**
+ * Group languages that have exactly the same issue counts onto one row.
+ *
+ * A project shipping eight locales usually breaks all of them the same way, so
+ * eight near-identical rows is eight times the reading for the same fact. One
+ * row saying `de, es, fr, it, ja, ko, pt-BR, zh-Hans -- 3 missing` is the
+ * finding; the per-language split only matters when it actually differs.
+ */
+function groupLanguagesByIssues(languages, issues) {
+    const empty = () => Object.fromEntries(ALL_ISSUE_CLASSES.map((c) => [c, 0]));
+    const perLanguage = new Map(languages.map((language) => [language, empty()]));
+    for (const issue of issues) {
+        if (!issue.language)
+            continue;
+        const counts = perLanguage.get(issue.language);
+        if (counts)
+            counts[issue.class]++;
+    }
+    const grouped = new Map();
+    for (const [language, counts] of perLanguage) {
+        const key = JSON.stringify(counts);
+        const existing = grouped.get(key);
+        if (existing)
+            existing.languages.push(language);
+        else {
+            grouped.set(key, {
+                languages: [language],
+                counts,
+                total: Object.values(counts).reduce((a, b) => a + b, 0),
+            });
+        }
+    }
+    return [...grouped.values()]
+        .map((group) => ({ ...group, languages: group.languages.sort() }))
+        .sort((a, b) => b.total - a.total || (a.languages[0] ?? '').localeCompare(b.languages[0] ?? ''));
+}
+/** `de, fr, ja`, or `all 12 languages` when the group covers every one. */
+function renderLanguageCell(languages, totalLanguages) {
+    if (languages.length === 0)
+        return '—';
+    if (totalLanguages > 1 && languages.length === totalLanguages) {
+        return `all ${totalLanguages} languages`;
+    }
+    if (languages.length > MAX_LANGUAGES_PER_CELL) {
+        const shown = languages.slice(0, MAX_LANGUAGES_PER_CELL).map(code).join(', ');
+        return `${shown} +${languages.length - MAX_LANGUAGES_PER_CELL} more`;
+    }
+    return languages.map(code).join(', ');
+}
+/**
+ * Counts per language group, with a column only for the classes that actually
+ * occurred. Percentages are deliberately absent: "2 missing" is something a
+ * reviewer can act on, "98.8%" is not.
+ */
+function renderLanguageTable(languages, issues) {
+    const groups = groupLanguagesByIssues(languages, issues);
+    if (groups.length === 0)
+        return '';
+    const classes = ALL_ISSUE_CLASSES.filter((c) => groups.some((g) => g.counts[c] > 0));
+    if (classes.length === 0)
+        return '';
+    const headers = ['Languages', ...classes.map((c) => CLASS_COLUMNS[c]), 'Total'];
+    const rows = groups.map((group) => [
+        renderLanguageCell(group.languages, languages.length),
+        ...classes.map((c) => (group.counts[c] === 0 ? '—' : String(group.counts[c]))),
+        group.total === 0 ? '✓ clean' : `**${group.total}**`,
+    ]);
+    return table(headers, rows);
+}
+/**
+ * One collapsed block per issue class, naming the keys involved.
+ *
+ * Split by class rather than one flat list because the classes need different
+ * fixes: a missing key needs a translator, a format specifier mismatch needs a
+ * developer, and mixing them buries the second in the first.
+ */
+function renderKeySections(issues, languages, maxRows) {
+    const sections = [];
+    for (const issueClass of ALL_ISSUE_CLASSES) {
+        const forClass = issues.filter((issue) => issue.class === issueClass);
+        if (forClass.length === 0)
+            continue;
+        const body = STATE_ISSUE_CLASSES.includes(issueClass)
+            ? renderKeyTable(forClass, languages, maxRows)
+            : renderMessageList(forClass, maxRows);
+        sections.push([
+            `<details><summary><b>${CLASS_LABELS[issueClass]}</b> · ${forClass.length}</summary>`,
+            '',
+            body,
+            '',
+            '</details>',
+        ].join('\n'));
+    }
+    return sections;
+}
+/** Key -> the languages it is missing from, so each key appears once. */
+function renderKeyTable(issues, languages, maxRows) {
+    const rows = new Map();
+    for (const issue of issues) {
+        const id = JSON.stringify([issue.catalog, issue.key]);
+        let row = rows.get(id);
+        if (!row) {
+            row = { catalog: issue.catalog, key: issue.key, languages: [] };
+            rows.set(id, row);
+        }
+        if (issue.language)
+            row.languages.push(issue.language);
+    }
+    const all = [...rows.values()];
+    // Widest blast radius first: a key missing everywhere matters more than one
+    // missing in a single locale.
+    all.sort((a, b) => b.languages.length - a.languages.length || a.key.localeCompare(b.key));
+    const showCatalog = new Set(all.map((r) => r.catalog)).size > 1;
+    const shown = all.slice(0, maxRows);
+    const headers = [...(showCatalog ? ['Catalog'] : []), 'Key', 'Languages'];
+    const body = shown.map((row) => [
+        ...(showCatalog ? [code(row.catalog)] : []),
+        code(row.key),
+        renderLanguageCell(row.languages.sort(), languages.length),
+    ]);
+    const rendered = table(headers, body);
+    return all.length > shown.length
+        ? `${rendered}\n\n_+ ${all.length - shown.length} more keys._`
+        : rendered;
+}
+/** Structural issues carry a specific message, so they read better as a list. */
+function renderMessageList(issues, maxRows) {
+    const shown = issues.slice(0, maxRows);
+    const lines = shown.map((issue) => `- ${code(issue.key)} — ${issue.message}`);
+    if (issues.length > shown.length) {
+        lines.push('', `_+ ${issues.length - shown.length} more._`);
+    }
+    return lines.join('\n');
 }
 
 ;// CONCATENATED MODULE: ./src/report/comment.ts
@@ -63741,14 +63806,22 @@ const COMMENT_MARKER = '<!-- xcstrings-lint -->';
 /** GitHub rejects comment bodies over 65536 characters. Leave headroom. */
 const MAX_COMMENT_LENGTH = 60000;
 const MAX_DETAIL_ROWS = 40;
+/**
+ * Render the sticky comment.
+ *
+ * Layout is deliberately two-tier. A reviewer opening the PR should learn
+ * what broke and where in about three seconds -- one headline, one grouped
+ * table -- and everything past that is collapsed until they ask for it. The
+ * detail matters, but not before they know whether it concerns them.
+ */
 function renderComment(input) {
     const status = input.passed ? '**passed**' : '**failed**';
     const lines = [`### 🌍 xcstrings-lint — ${status}`, '', headline(input), ''];
-    lines.push(renderCoverageTable(input), '');
-    const detail = renderIssueDetail(input.blocking, MAX_DETAIL_ROWS);
-    if (detail) {
-        const label = input.mode === 'ratchet' ? 'New issues' : 'Issues';
-        lines.push(`<details><summary>${label} (${input.blocking.length})</summary>`, '', detail, '', '</details>', '');
+    const summary = renderLanguageTable(input.result.languages, input.blocking);
+    if (summary)
+        lines.push(summary, '');
+    for (const section of renderKeySections(input.blocking, input.result.languages, MAX_DETAIL_ROWS)) {
+        lines.push(section, '');
     }
     const fixed = input.comparison?.fixedIssues.length ?? 0;
     if (fixed > 0)
@@ -63762,22 +63835,20 @@ function renderComment(input) {
 }
 function headline(input) {
     const base = input.baseRef ? code(input.baseRef) : 'the base branch';
+    const keys = new Set(input.blocking.map((issue) => `${issue.catalog} ${issue.key}`)).size;
+    const languages = new Set(input.blocking.map((issue) => issue.language).filter(Boolean)).size;
     if (input.mode === 'ratchet') {
-        if (input.blocking.length === 0) {
+        if (input.blocking.length === 0)
             return `No new localization issues vs ${base}.`;
-        }
-        const languages = new Set(input.blocking.map((i) => i.language).filter(Boolean));
-        const where = languages.size > 0 ? ` across ${pluralise(languages.size, 'language')}` : '';
-        return `**${pluralise(input.blocking.length, 'new issue')}**${where} vs ${base}.`;
+        return (`**${pluralise(input.blocking.length, 'new issue')}** vs ${base} — ` +
+            `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
     }
-    const threshold = input.threshold ?? 100;
     const shortfalls = input.shortfalls ?? [];
-    if (shortfalls.length === 0) {
-        return `Every language is at or above ${threshold}% coverage.`;
+    if (input.blocking.length === 0 && shortfalls.length === 0) {
+        return 'Every language is fully translated.';
     }
-    return `**${pluralise(shortfalls.length, 'language')}** below the ${threshold}% threshold: ${shortfalls
-        .map((s) => `${code(s.language)} at ${s.percent}%`)
-        .join(', ')}.`;
+    return (`**${pluralise(input.blocking.length, 'issue')}** — ` +
+        `${pluralise(keys, 'key')} across ${pluralise(languages, 'language')}.`);
 }
 function footer(input) {
     const parts = [`Mode: \`${input.mode}\``];
@@ -63805,7 +63876,6 @@ function isOurComment(body) {
 
 ;// CONCATENATED MODULE: ./src/report/summary.ts
 
-
 /**
  * The job summary is the surface that always works.
  *
@@ -63816,45 +63886,35 @@ function isOurComment(body) {
 /** $GITHUB_STEP_SUMMARY accepts 1MB; stay well inside it. */
 const MAX_SUMMARY_LENGTH = 900_000;
 const summary_MAX_DETAIL_ROWS = 200;
-const CLASS_LABELS = {
-    missing: 'Missing',
-    empty: 'Empty',
-    new: 'Untranslated (new)',
-    needsReview: 'Needs review',
-    stale: 'Stale key',
-    formatSpecifier: 'Format specifier mismatch',
-    pluralCoverage: 'Incomplete plural coverage',
-};
 function renderSummary(input) {
+    const languages = input.result.languages;
     const lines = [
         `## 🌍 xcstrings-lint — ${input.passed ? 'passed' : 'failed'}`,
         '',
         ...describeRun(input),
         '',
-        '### Coverage',
-        '',
-        renderCoverageTable(input),
-        '',
     ];
-    const breakdown = classBreakdown(input.allIssues);
-    if (breakdown.length > 0) {
-        lines.push('### Issues found', '', table(['Class', 'Errors', 'Warnings'], breakdown.map((row) => [row.label, String(row.errors), String(row.warnings)])), '');
-    }
     if (input.blocking.length > 0) {
-        // Not "blocking": this set includes warnings, which do not fail the run.
-        // The `issue-count` output counts errors only.
-        const label = input.mode === 'ratchet' ? 'New issues' : 'Issues';
-        lines.push(`<details open><summary>${label} (${input.blocking.length})</summary>`, '', renderIssueDetail(input.blocking, summary_MAX_DETAIL_ROWS), '', '</details>', '');
+        const heading = input.mode === 'ratchet' ? 'New issues' : 'Issues';
+        lines.push(`### ${heading}`, '');
+        const grouped = renderLanguageTable(languages, input.blocking);
+        if (grouped)
+            lines.push(grouped, '');
+        for (const section of renderKeySections(input.blocking, languages, summary_MAX_DETAIL_ROWS)) {
+            lines.push(section, '');
+        }
     }
-    // Everything at head, gating or not. This is the list the annotation cap and
-    // the comment's own limits are allowed to truncate away from.
+    // Percentages live here and not in the PR comment: this is the surface people
+    // open when they want the standing number, rather than the one thing that
+    // changed in front of them.
+    lines.push('### Coverage', '', renderCoverageTable(input), '');
     const carried = input.allIssues.filter((issue) => !input.blocking.includes(issue));
     if (carried.length > 0) {
-        lines.push(`<details><summary>Pre-existing issues (${carried.length})</summary>`, '', renderIssueDetail(carried, summary_MAX_DETAIL_ROWS), '', '</details>', '');
+        lines.push(`<details><summary>Pre-existing issues · ${carried.length}</summary>`, '', renderLanguageTable(languages, carried), '', ...renderKeySections(carried, languages, summary_MAX_DETAIL_ROWS), '', '</details>', '');
     }
     const fixed = input.comparison?.fixedIssues ?? [];
     if (fixed.length > 0) {
-        lines.push(`<details><summary>Fixed on this branch (${fixed.length})</summary>`, '', renderIssueDetail(fixed, summary_MAX_DETAIL_ROWS), '', '</details>', '');
+        lines.push(`<details><summary>Fixed on this branch · ${fixed.length}</summary>`, '', ...renderKeySections(fixed, languages, summary_MAX_DETAIL_ROWS), '', '</details>', '');
     }
     if (input.annotationsDropped) {
         lines.push(`_${input.annotationsDropped} annotations were not shown inline; GitHub caps them per step._`, '');
@@ -63880,16 +63940,6 @@ function describeRun(input) {
         ? `Every language is at or above ${threshold}% coverage.`
         : `${pluralise(shortfalls.length, 'language')} below the ${threshold}% threshold.`;
     return [headline, '', `Checked ${catalogs} across ${languages}.`];
-}
-function classBreakdown(issues) {
-    return ALL_ISSUE_CLASSES.map((issueClass) => {
-        const matching = issues.filter((issue) => issue.class === issueClass);
-        return {
-            label: CLASS_LABELS[issueClass],
-            errors: matching.filter((issue) => issue.severity === 'error').length,
-            warnings: matching.filter((issue) => issue.severity === 'warn').length,
-        };
-    }).filter((row) => row.errors > 0 || row.warnings > 0);
 }
 /**
  * Parse failures get their own block. These are a different kind of problem
