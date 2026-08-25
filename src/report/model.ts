@@ -24,10 +24,6 @@ export interface ReportInput {
   annotationsDropped?: number | undefined
 }
 
-/* -------------------------------------------------------------------------- */
-/* Markdown helpers                                                            */
-/* -------------------------------------------------------------------------- */
-
 /** Inline code that survives a Markdown table cell. */
 export function code(value: string): string {
   if (value === '') return '``'
@@ -54,10 +50,6 @@ export function table(headers: string[], rows: string[][]): string {
     ...rows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n')
 }
-
-/* -------------------------------------------------------------------------- */
-/* Coverage                                                                    */
-/* -------------------------------------------------------------------------- */
 
 export interface CoverageRow {
   language: string
@@ -109,10 +101,6 @@ export function renderCoverageTable(input: ReportInput): string {
     ]),
   )
 }
-
-/* -------------------------------------------------------------------------- */
-/* Issue detail                                                                */
-/* -------------------------------------------------------------------------- */
 
 const CELL: Record<StateIssueClass, string> = {
   missing: '✕ missing',

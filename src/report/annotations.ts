@@ -11,7 +11,6 @@ export interface Annotation {
 
 export interface AnnotationPlan {
   annotations: Annotation[]
-  /** How many of each level were dropped by the cap. */
   dropped: { error: number; warning: number }
   get totalDropped(): number
 }

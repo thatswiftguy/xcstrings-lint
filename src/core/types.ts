@@ -138,10 +138,6 @@ export interface Leaf {
   loc: SourceLocation
 }
 
-/* -------------------------------------------------------------------------- */
-/* Issues                                                                      */
-/* -------------------------------------------------------------------------- */
-
 /**
  * Per-(key, language) translation states. These are mutually exclusive: a pair
  * is at most one of them, resolved by `STATE_PRECEDENCE`.
@@ -179,7 +175,6 @@ export type ReportedSeverity = 'error' | 'warn'
 export interface Issue {
   class: IssueClass
   severity: ReportedSeverity
-  /** Catalog path this came from. */
   catalog: string
   key: string
   /**
@@ -187,7 +182,6 @@ export interface Issue {
    * at once, and fanning it out across 30 locales would bury everything else.
    */
   language?: LanguageCode
-  /** Where an annotation about this issue should point. */
   loc: SourceLocation
   /** One line, shown in annotations and tables. */
   message: string

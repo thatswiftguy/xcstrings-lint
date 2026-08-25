@@ -14,15 +14,6 @@
 
 export type PluralCategory = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other'
 
-export const ALL_PLURAL_CATEGORIES: readonly PluralCategory[] = [
-  'zero',
-  'one',
-  'two',
-  'few',
-  'many',
-  'other',
-]
-
 /** Every language shares `other`; the sets below list the full requirement. */
 const CATEGORY_SETS: Array<{
   categories: readonly PluralCategory[]

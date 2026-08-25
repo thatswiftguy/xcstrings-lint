@@ -146,10 +146,6 @@ export function analyze(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* State classification                                                        */
-/* -------------------------------------------------------------------------- */
-
 function assess(
   entry: CatalogEntry,
   language: LanguageCode,
@@ -238,10 +234,6 @@ function stateMessage(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Source resolution                                                           */
-/* -------------------------------------------------------------------------- */
-
 interface SourceReference {
   leaves: Leaf[]
   substitutions: Record<string, { formatSpecifier?: string }> | undefined
@@ -311,10 +303,6 @@ function referenceFor(sourceLeaves: Leaf[], targetPath: Leaf['path']): Leaf | un
 
   return sourceLeaves[0]
 }
-
-/* -------------------------------------------------------------------------- */
-/* Structural checks                                                           */
-/* -------------------------------------------------------------------------- */
 
 function checkFormatSpecifiers(
   issues: Issue[],
@@ -393,10 +381,6 @@ function checkPluralCoverage(
     })
   }
 }
-
-/* -------------------------------------------------------------------------- */
-/* Assembly                                                                    */
-/* -------------------------------------------------------------------------- */
 
 type PendingIssue = Omit<Issue, 'severity'> & { forceWarn?: boolean }
 

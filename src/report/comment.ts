@@ -98,7 +98,6 @@ export function truncate(body: string, limit = MAX_COMMENT_LENGTH): string {
   return `${body.slice(0, Math.max(0, room)).trimEnd()}${notice}${marker}`
 }
 
-/** Does this body belong to us? Used to decide PATCH versus POST. */
 export function isOurComment(body: string | undefined | null): boolean {
   return typeof body === 'string' && body.includes(COMMENT_MARKER)
 }

@@ -12,10 +12,6 @@ import { type PluralCategory } from './cldr-plurals.js'
 
 const PLURAL_CATEGORIES = new Set<string>(['zero', 'one', 'two', 'few', 'many', 'other'])
 
-/* -------------------------------------------------------------------------- */
-/* Encoding                                                                    */
-/* -------------------------------------------------------------------------- */
-
 /**
  * Decode a legacy strings file.
  *
@@ -54,10 +50,6 @@ export function decodeTextFile(buffer: Buffer): string {
 
   return stripBom(buffer.toString('utf8'))
 }
-
-/* -------------------------------------------------------------------------- */
-/* .strings                                                                    */
-/* -------------------------------------------------------------------------- */
 
 export interface StringsEntry {
   key: string
@@ -204,10 +196,6 @@ function readEscape(
   set(i + 1)
   return ch
 }
-
-/* -------------------------------------------------------------------------- */
-/* .stringsdict                                                                */
-/* -------------------------------------------------------------------------- */
 
 type PlistValue =
   | { type: 'dict'; entries: Array<{ key: string; loc: SourceLocation; value: PlistValue }>; loc: SourceLocation }
@@ -422,10 +410,6 @@ function decodeXmlEntities(text: string): string {
     }
   })
 }
-
-/* -------------------------------------------------------------------------- */
-/* Assembling tables into catalogs                                             */
-/* -------------------------------------------------------------------------- */
 
 export interface LegacyFileInfo {
   /** Directory that holds the `.lproj` folders. */

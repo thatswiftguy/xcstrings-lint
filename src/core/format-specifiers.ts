@@ -97,7 +97,6 @@ const WIDTHS: Record<string, WidthClass> = {
 
 const isDigit = (c: string | undefined): boolean => c !== undefined && c >= '0' && c <= '9'
 
-/** Tokenise every format specifier in a string, in source order. */
 export function parseFormatSpecifiers(value: string): FormatSpecifier[] {
   const out: FormatSpecifier[] = []
   let implicit = 0
@@ -132,7 +131,6 @@ export function parseFormatSpecifiers(value: string): FormatSpecifier[] {
       continue
     }
 
-    // [argnum$]
     let position: number | undefined
     let digits = i
     while (isDigit(value[digits])) digits++

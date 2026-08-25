@@ -6,7 +6,7 @@ import { CatalogParseError } from './core/types.js'
 import { planAnnotations } from './report/annotations.js'
 import { COMMENT_MARKER, isOurComment, renderComment, truncate } from './report/comment.js'
 import { renderParseErrors, renderSummary } from './report/summary.js'
-import { run, type RunResult } from './run.js'
+import { exitCodeFor, run, type RunResult } from './run.js'
 
 /** Action outputs have a size limit; the full report lives in the job summary. */
 const MAX_REPORT_OUTPUT = 50_000
@@ -80,7 +80,10 @@ async function runAction(): Promise<void> {
   core.setOutput('issue-count', String(input.blocking.filter((i) => i.severity === 'error').length))
   core.setOutput('report', truncate(body, MAX_REPORT_OUTPUT))
 
-  if (input.passed) {
+  // exitCodeFor is the single definition of the 0/1/2 contract. Parse errors
+  // (2) already returned above, so this is 0 or 1 -- and because the action
+  // asks the same function the tests assert on, the two cannot drift.
+  if (exitCodeFor(result) === 0) {
     core.info('No new localization issues.')
     return
   }
@@ -94,10 +97,6 @@ function failureSummary(count: number, mode: Mode): string {
     ? `${count} new localization ${noun} introduced by this change.`
     : `${count} localization ${noun} found.`
 }
-
-/* -------------------------------------------------------------------------- */
-/* Inputs                                                                      */
-/* -------------------------------------------------------------------------- */
 
 function readMode(): Mode {
   const value = (core.getInput('mode') || 'ratchet').trim()
@@ -157,10 +156,6 @@ function requireBaseRef(): string {
       '        mode: absolute',
   )
 }
-
-/* -------------------------------------------------------------------------- */
-/* Output surfaces                                                             */
-/* -------------------------------------------------------------------------- */
 
 async function writeSummary(markdown: string): Promise<void> {
   try {
@@ -243,7 +238,7 @@ async function postComment(body: string): Promise<void> {
 /** Exit 2: the tool is misconfigured, as distinct from failing translations. */
 function misconfigured(message: string): void {
   core.setFailed(message)
-  // setFailed sets 1; the spec reserves 2 for "this tool is misconfigured".
+  // setFailed sets exit 1; 2 is reserved for "this tool is misconfigured".
   process.exitCode = 2
 }
 

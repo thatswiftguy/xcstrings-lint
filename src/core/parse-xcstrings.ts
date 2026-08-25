@@ -193,10 +193,6 @@ function parseStringUnit(node: Node): StringUnit {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* jsonc-parser node helpers                                                   */
-/* -------------------------------------------------------------------------- */
-
 interface ObjectProp {
   key: string
   keyNode: Node

@@ -84,7 +84,8 @@ Node version is pinned in `.nvmrc`. A few things worth knowing before you open a
 - **`self-check.yml` runs the action against those fixtures** on every PR, so the real bundle is
   exercised in a real runner.
 
-Bug reports are most useful with the `.xcstrings` snippet that triggered them.
+The project is in maintenance mode — correctness fixes over new surface area. Bug reports are most
+useful with the `.xcstrings` snippet that triggered them.
 
 ---
 
@@ -233,17 +234,18 @@ to secrets in the base repository's context.
 
 ---
 
-## Roadmap
+## Scope
 
-Not in v1, roughly in order of likelihood:
+v1 is feature-complete and does one job: check iOS String Catalogs on pull requests.
 
-- [ ] Machine translation and auto-fix pull requests
-- [ ] XLIFF and `.xcloc` support
-- [ ] Checks API batching, for more than ~10 annotations per run
-- [ ] A standalone CLI, for pre-commit hooks and Xcode build phases
-- [ ] TMS integrations (Lokalise, Crowdin, Phrase)
-- [ ] Android `strings.xml`
-- [ ] A web dashboard
+**In scope** — `.xcstrings`, legacy `.strings` and `.stringsdict`, plural `substitutions`, the seven
+checks above, ratchet and absolute modes, and the three report surfaces.
+
+**Out of scope, deliberately** — machine translation or auto-fix commits, XLIFF / `.xcloc`, Android
+`strings.xml`, TMS integrations, a web dashboard, and a standalone CLI. Each is a different product,
+and bolting them on is how a focused tool turns into a slow one.
+
+Bug reports and fixes are welcome. New features aren't planned.
 
 ## License
 

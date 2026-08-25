@@ -89,10 +89,6 @@ export function compareToBase(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Resolving the base revision                                                 */
-/* -------------------------------------------------------------------------- */
-
 const FETCH_DEPTH_HINT = [
   'The ratchet compares against the base branch, which is not in this clone.',
   'Add fetch-depth: 0 to your checkout step:',
@@ -120,7 +116,7 @@ export interface BaseRevisionOptions {
   cwd: string
   /** Branch name, e.g. `main` -- typically GITHUB_BASE_REF. */
   baseRef: string
-  /** Attempt a fetch when the ref is missing. Off for local CLI runs. */
+  /** Attempt a fetch when the ref is missing. */
   allowFetch?: boolean
   onNotice?: (message: string) => void
 }
@@ -179,10 +175,6 @@ export function resolveBaseRevision(options: BaseRevisionOptions): string {
 export function baseRevisionFiles(revision: string, cwd: string): RevisionFiles {
   return gitRevisionFiles(revision, cwd)
 }
-
-/* -------------------------------------------------------------------------- */
-/* Absolute mode                                                               */
-/* -------------------------------------------------------------------------- */
 
 export interface ThresholdShortfall {
   language: string

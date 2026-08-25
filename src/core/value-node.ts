@@ -37,7 +37,6 @@ export function leafPathLabel(path: VariationStep[]): string {
   return path.map((s) => `${s.kind}.${s.branch}`).join(' / ')
 }
 
-/** Set of leaf path labels, for comparing the *shape* of two value trees. */
 export function leafShape(node: ValueNode | undefined): Set<string> {
   return new Set(collectLeaves(node).map((l) => leafPathLabel(l.path)))
 }

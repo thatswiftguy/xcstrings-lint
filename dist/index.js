@@ -61679,9 +61679,6 @@ class CatalogParseError extends Error {
         this.column = column;
     }
 }
-/* -------------------------------------------------------------------------- */
-/* Issues                                                                      */
-/* -------------------------------------------------------------------------- */
 /**
  * Per-(key, language) translation states. These are mutually exclusive: a pair
  * is at most one of them, resolved by `STATE_PRECEDENCE`.
@@ -61871,7 +61868,6 @@ function createIgnoreMatchers(config) {
         ignoresFile: (path) => fileMatcher?.(path) ?? false,
     };
 }
-/** Match a repo-relative path against the configured `paths` globs. */
 function createPathMatcher(config) {
     const include = picomatch_default()(config.paths, { dot: true });
     const { ignoresFile } = createIgnoreMatchers(config);
@@ -61894,14 +61890,6 @@ const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createReq
  * lines of data that changes roughly never, and a CLDR dependency would be
  * megabytes in the ncc bundle for this one lookup.
  */
-const ALL_PLURAL_CATEGORIES = (/* unused pure expression or super */ null && ([
-    'zero',
-    'one',
-    'two',
-    'few',
-    'many',
-    'other',
-]));
 /** Every language shares `other`; the sets below list the full requirement. */
 const CATEGORY_SETS = [
     {
@@ -62060,7 +62048,6 @@ const WIDTHS = {
     Z: 'size',
 };
 const isDigit = (c) => c !== undefined && c >= '0' && c <= '9';
-/** Tokenise every format specifier in a string, in source order. */
 function parseFormatSpecifiers(value) {
     const out = [];
     let implicit = 0;
@@ -62091,7 +62078,6 @@ function parseFormatSpecifiers(value) {
             });
             continue;
         }
-        // [argnum$]
         let position;
         let digits = i;
         while (isDigit(value[digits]))
@@ -62300,7 +62286,6 @@ function walk(node, path, out) {
 function leafPathLabel(path) {
     return path.map((s) => `${s.kind}.${s.branch}`).join(' / ');
 }
-/** Set of leaf path labels, for comparing the *shape* of two value trees. */
 function leafShape(node) {
     return new Set(collectLeaves(node).map((l) => leafPathLabel(l.path)));
 }
@@ -62409,9 +62394,6 @@ function analyze(catalogs, config, options = {}) {
         languages: [...tally.keys()].sort(),
     };
 }
-/* -------------------------------------------------------------------------- */
-/* State classification                                                        */
-/* -------------------------------------------------------------------------- */
 function assess(entry, language, sourceLeaves) {
     const localization = entry.localizations[language];
     if (!localization) {
@@ -62537,9 +62519,6 @@ function referenceFor(sourceLeaves, targetPath) {
     }
     return sourceLeaves[0];
 }
-/* -------------------------------------------------------------------------- */
-/* Structural checks                                                           */
-/* -------------------------------------------------------------------------- */
 function checkFormatSpecifiers(issues, config, catalog, entry, language, localization, source) {
     const targets = [
         ...collectLeaves(localization),
@@ -62849,9 +62828,6 @@ const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(impo
 
 
 const PLURAL_CATEGORIES = new Set(['zero', 'one', 'two', 'few', 'many', 'other']);
-/* -------------------------------------------------------------------------- */
-/* Encoding                                                                    */
-/* -------------------------------------------------------------------------- */
 /**
  * Decode a legacy strings file.
  *
@@ -63466,9 +63442,6 @@ function compareToBase(headCatalogs, base, config) {
         baseErrors: loaded.errors,
     };
 }
-/* -------------------------------------------------------------------------- */
-/* Resolving the base revision                                                 */
-/* -------------------------------------------------------------------------- */
 const FETCH_DEPTH_HINT = [
     'The ratchet compares against the base branch, which is not in this clone.',
     'Add fetch-depth: 0 to your checkout step:',
@@ -63600,9 +63573,6 @@ function planAnnotations(issues, maxPerLevel = DEFAULT_MAX_PER_LEVEL) {
 
 ;// CONCATENATED MODULE: ./src/report/model.ts
 
-/* -------------------------------------------------------------------------- */
-/* Markdown helpers                                                            */
-/* -------------------------------------------------------------------------- */
 /** Inline code that survives a Markdown table cell. */
 function code(value) {
     if (value === '')
@@ -63664,9 +63634,6 @@ function renderCoverageTable(input) {
         row.after >= threshold ? '✓' : '✕ below',
     ]));
 }
-/* -------------------------------------------------------------------------- */
-/* Issue detail                                                                */
-/* -------------------------------------------------------------------------- */
 const CELL = {
     missing: '✕ missing',
     empty: '⚠ empty',
@@ -63832,7 +63799,6 @@ function truncate(body, limit = MAX_COMMENT_LENGTH) {
     const room = limit - notice.length - marker.length;
     return `${body.slice(0, Math.max(0, room)).trimEnd()}${notice}${marker}`;
 }
-/** Does this body belong to us? Used to decide PATCH versus POST. */
 function isOurComment(body) {
     return typeof body === 'string' && body.includes(COMMENT_MARKER);
 }
@@ -64088,7 +64054,10 @@ async function runAction() {
     setOutput('coverage', JSON.stringify(Object.fromEntries(Object.entries(input.result.coverage).map(([language, c]) => [language, c.percent]))));
     setOutput('issue-count', String(input.blocking.filter((i) => i.severity === 'error').length));
     setOutput('report', truncate(body, MAX_REPORT_OUTPUT));
-    if (input.passed) {
+    // exitCodeFor is the single definition of the 0/1/2 contract. Parse errors
+    // (2) already returned above, so this is 0 or 1 -- and because the action
+    // asks the same function the tests assert on, the two cannot drift.
+    if (exitCodeFor(result) === 0) {
         info('No new localization issues.');
         return;
     }
@@ -64103,9 +64072,6 @@ function failureSummary(count, mode) {
         ? `${count} new localization ${noun} introduced by this change.`
         : `${count} localization ${noun} found.`;
 }
-/* -------------------------------------------------------------------------- */
-/* Inputs                                                                      */
-/* -------------------------------------------------------------------------- */
 function readMode() {
     const value = (getInput('mode') || 'ratchet').trim();
     if (value !== 'ratchet' && value !== 'absolute') {
@@ -64162,9 +64128,6 @@ function requireBaseRef() {
         '      with:\n' +
         '        mode: absolute');
 }
-/* -------------------------------------------------------------------------- */
-/* Output surfaces                                                             */
-/* -------------------------------------------------------------------------- */
 async function writeSummary(markdown) {
     try {
         await summary.addRaw(markdown).write();
@@ -64240,7 +64203,7 @@ async function postComment(body) {
 /** Exit 2: the tool is misconfigured, as distinct from failing translations. */
 function misconfigured(message) {
     setFailed(message);
-    // setFailed sets 1; the spec reserves 2 for "this tool is misconfigured".
+    // setFailed sets exit 1; 2 is reserved for "this tool is misconfigured".
     process.exitCode = 2;
 }
 /**

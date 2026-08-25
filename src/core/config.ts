@@ -220,7 +220,6 @@ export function createIgnoreMatchers(config: ResolvedConfig): IgnoreMatchers {
   }
 }
 
-/** Match a repo-relative path against the configured `paths` globs. */
 export function createPathMatcher(config: ResolvedConfig): (path: string) => boolean {
   const include = picomatch(config.paths, { dot: true })
   const { ignoresFile } = createIgnoreMatchers(config)
