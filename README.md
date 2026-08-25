@@ -41,25 +41,42 @@ the base branch; without it you get a warning and a less precise comparison, not
 
 > ### 🌍 xcstrings-lint — **failed**
 >
-> **5 new issues** across 2 languages vs `main`.
+> **24 new issues** vs `main` — 4 keys across 8 languages.
 >
-> | Language | Before | After | Δ | New issues |
+> | Languages | Missing | Empty | Format | Total |
 > |---|---|---|---|---|
-> | `de` | 100% | 100% | — | 0 |
-> | `fr` | 100% | 98.8% | 🔻 1.2% | **2** |
-> | `ja` | 100% | 98.2% | 🔻 1.8% | **3** |
+> | `de` | 2 | 1 | 1 | **4** |
+> | `es`, `it`, `ja`, `ko`, `pt-BR`, `zh-Hans` | 3 | — | — | **3** |
+> | `fr` | 2 | — | — | **2** |
 >
-> <details open><summary>New issues (5)</summary>
+> <details><summary><b>Missing translations</b> · 22</summary>
 >
-> | Key | fr | ja |
-> |---|---|---|
-> | `payment_save_card_title` | ✓ | ✕ missing |
-> | `payment_save_card_subtitle` | ✕ missing | ✕ missing |
-> | `payment_cvv_hint` | ⚠ empty | ✕ missing |
+> | Key | Languages |
+> |---|---|
+> | `payment_save_card_subtitle` | all 8 languages |
+> | `payment_save_card_title` | all 8 languages |
+> | `payment_cvv_hint` | `es`, `it`, `ja`, `ko`, `pt-BR`, `zh-Hans` |
+>
+> </details>
+>
+> <details><summary><b>Empty values</b> · 1</summary>
+>
+> | Key | Languages |
+> |---|---|
+> | `payment_cvv_hint` | `de` |
+>
+> </details>
+>
+> <details><summary><b>Format specifier mismatches</b> · 1</summary>
+>
+> - `cart_item_count` — de: expected %lld at position 1, found %@
 >
 > </details>
 >
 > <sub>Mode: `ratchet`</sub>
+
+Languages that broke the same way share a row, so eight locales missing the same three keys is one
+line, not eight. Detail stays collapsed until someone wants it.
 
 One sticky comment, updated in place on every push, plus inline annotations and a job summary that
 works even on fork pull requests.

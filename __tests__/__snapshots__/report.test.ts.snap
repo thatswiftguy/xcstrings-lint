@@ -7,30 +7,39 @@ exports[`job summary > renders a failing ratchet report 1`] = `
 
 Checked 1 catalog across 3 languages.
 
+### New issues
+
+| Languages | Missing | Empty | Total |
+|---|---|---|---|
+| \`ja\` | 3 | — | **3** |
+| \`fr\` | 1 | 1 | **2** |
+| \`de\` | — | — | ✓ clean |
+
+<details><summary><b>Missing translations</b> · 4</summary>
+
+| Key | Languages |
+|---|---|
+| \`payment_save_card_subtitle\` | \`fr\`, \`ja\` |
+| \`payment_cvv_hint\` | \`ja\` |
+| \`payment_save_card_title\` | \`ja\` |
+
+</details>
+
+<details><summary><b>Empty values</b> · 1</summary>
+
+| Key | Languages |
+|---|---|
+| \`payment_cvv_hint\` | \`fr\` |
+
+</details>
+
 ### Coverage
 
 | Language | Before | After | Δ | New issues |
 |---|---|---|---|---|
 | \`de\` | 100% | 100% | — | 0 |
 | \`fr\` | 100% | 33.3% | 🔻 66.7% | **2** |
-| \`ja\` | 100% | 0% | 🔻 100% | **3** |
-
-### Issues found
-
-| Class | Errors | Warnings |
-|---|---|---|
-| Missing | 4 | 0 |
-| Empty | 1 | 0 |
-
-<details open><summary>New issues (5)</summary>
-
-| Key | fr | ja |
-|---|---|---|
-| \`payment_save_card_title\` | ✓ | ✕ missing |
-| \`payment_save_card_subtitle\` | ✕ missing | ✕ missing |
-| \`payment_cvv_hint\` | ⚠ empty | ✕ missing |
-
-</details>"
+| \`ja\` | 100% | 0% | 🔻 100% | **3** |"
 `;
 
 exports[`job summary > renders an absolute-mode report 1`] = `
@@ -40,46 +49,55 @@ exports[`job summary > renders an absolute-mode report 1`] = `
 
 Checked 1 catalog across 2 languages.
 
+### Issues
+
+| Languages | Missing | Total |
+|---|---|---|
+| \`fr\` | 1 | **1** |
+| \`de\` | — | ✓ clean |
+
+<details><summary><b>Missing translations</b> · 1</summary>
+
+| Key | Languages |
+|---|---|
+| \`b\` | \`fr\` |
+
+</details>
+
 ### Coverage
 
 | Language | Coverage | Threshold | Status |
 |---|---|---|---|
 | \`de\` | 100% | 100% | ✓ |
-| \`fr\` | 50% | 100% | ✕ below |
-
-### Issues found
-
-| Class | Errors | Warnings |
-|---|---|---|
-| Missing | 1 | 0 |
-
-<details open><summary>Issues (1)</summary>
-
-| Key | fr |
-|---|---|
-| \`b\` | ✕ missing |
-
-</details>"
+| \`fr\` | 50% | 100% | ✕ below |"
 `;
 
 exports[`sticky comment > renders a failing ratchet report 1`] = `
 "### 🌍 xcstrings-lint — **failed**
 
-**5 new issues** across 2 languages vs \`main\`.
+**5 new issues** vs \`main\` — 3 keys across 2 languages.
 
-| Language | Before | After | Δ | New issues |
-|---|---|---|---|---|
-| \`de\` | 100% | 100% | — | 0 |
-| \`fr\` | 100% | 33.3% | 🔻 66.7% | **2** |
-| \`ja\` | 100% | 0% | 🔻 100% | **3** |
+| Languages | Missing | Empty | Total |
+|---|---|---|---|
+| \`ja\` | 3 | — | **3** |
+| \`fr\` | 1 | 1 | **2** |
+| \`de\` | — | — | ✓ clean |
 
-<details><summary>New issues (5)</summary>
+<details><summary><b>Missing translations</b> · 4</summary>
 
-| Key | fr | ja |
-|---|---|---|
-| \`payment_save_card_title\` | ✓ | ✕ missing |
-| \`payment_save_card_subtitle\` | ✕ missing | ✕ missing |
-| \`payment_cvv_hint\` | ⚠ empty | ✕ missing |
+| Key | Languages |
+|---|---|
+| \`payment_save_card_subtitle\` | \`fr\`, \`ja\` |
+| \`payment_cvv_hint\` | \`ja\` |
+| \`payment_save_card_title\` | \`ja\` |
+
+</details>
+
+<details><summary><b>Empty values</b> · 1</summary>
+
+| Key | Languages |
+|---|---|
+| \`payment_cvv_hint\` | \`fr\` |
 
 </details>
 
@@ -91,29 +109,24 @@ exports[`sticky comment > renders a passing ratchet report 1`] = `
 
 No new localization issues vs \`main\`.
 
-| Language | Before | After | Δ | New issues |
-|---|---|---|---|---|
-| \`de\` | 100% | 100% | — | 0 |
-| \`fr\` | 100% | 100% | — | 0 |
-
 <sub>Mode: \`ratchet\` · <!-- xcstrings-lint --></sub>"
 `;
 
 exports[`sticky comment > renders an absolute-mode report 1`] = `
 "### 🌍 xcstrings-lint — **failed**
 
-**1 language** below the 100% threshold: \`fr\` at 50%.
+**1 issue** — 1 key across 1 language.
 
-| Language | Coverage | Threshold | Status |
-|---|---|---|---|
-| \`de\` | 100% | 100% | ✓ |
-| \`fr\` | 50% | 100% | ✕ below |
+| Languages | Missing | Total |
+|---|---|---|
+| \`fr\` | 1 | **1** |
+| \`de\` | — | ✓ clean |
 
-<details><summary>Issues (1)</summary>
+<details><summary><b>Missing translations</b> · 1</summary>
 
-| Key | fr |
+| Key | Languages |
 |---|---|
-| \`b\` | ✕ missing |
+| \`b\` | \`fr\` |
 
 </details>
 
