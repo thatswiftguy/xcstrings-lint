@@ -76,7 +76,8 @@ the base branch; without it you get a warning and a less precise comparison, not
 > <sub>Mode: `ratchet`</sub>
 
 Languages that broke the same way share a row, so eight locales missing the same three keys is one
-line, not eight. Detail stays collapsed until someone wants it.
+line, not eight. Detail stays collapsed until someone wants it — including the pre-existing backlog,
+which is listed but never counted against the PR.
 
 One sticky comment, updated in place on every push, plus inline annotations and a job summary that
 works even on fork pull requests.

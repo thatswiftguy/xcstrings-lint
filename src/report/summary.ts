@@ -51,7 +51,7 @@ export function renderSummary(input: ReportInput): string {
       '',
       renderLanguageTable(languages, carried),
       '',
-      ...renderKeySections(carried, languages, MAX_DETAIL_ROWS),
+      ...renderKeySections(carried, languages, MAX_DETAIL_ROWS, { collapsed: false }),
       '',
       '</details>',
       '',
@@ -63,7 +63,7 @@ export function renderSummary(input: ReportInput): string {
     lines.push(
       `<details><summary>Fixed on this branch · ${fixed.length}</summary>`,
       '',
-      ...renderKeySections(fixed, languages, MAX_DETAIL_ROWS),
+      ...renderKeySections(fixed, languages, MAX_DETAIL_ROWS, { collapsed: false }),
       '',
       '</details>',
       '',

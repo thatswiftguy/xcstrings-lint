@@ -73,6 +73,33 @@ function paymentScenario(): ReportInput {
   }
 }
 
+/** A clean PR sitting on top of a base branch that already has a backlog. */
+function backlogScenario(): ReportInput {
+  const shared = {
+    old_a: { en: 'A', de: 'A', fr: null, ja: null },
+    old_b: { en: 'B', de: 'B', fr: null, ja: null },
+    old_empty: { en: 'C', de: '', fr: '', ja: '' },
+  }
+  const base = { 'App/Localizable.xcstrings': catalog(shared) }
+  const head = {
+    'App/Localizable.xcstrings': catalog({
+      ...shared,
+      brand_new: { en: 'New', de: 'Neu', fr: 'Nouveau', ja: '新規' },
+    }),
+  }
+  const headCatalogs = loadCatalogs(memoryFiles(head, 'head'), config).catalogs
+  const comparison = compareToBase(headCatalogs, memoryFiles(base, 'origin/main'), config)
+  return {
+    mode: 'ratchet',
+    passed: true,
+    result: comparison.head,
+    allIssues: comparison.head.issues,
+    blocking: comparison.newIssues,
+    comparison,
+    baseRef: 'main',
+  }
+}
+
 function cleanScenario(): ReportInput {
   const files = {
     'App/Localizable.xcstrings': catalog({
@@ -373,6 +400,46 @@ describe('sticky comment', () => {
     const body = renderComment(paymentScenario())
     expect(body).not.toContain('<details open>')
     expect(body.indexOf('| Languages |')).toBeLessThan(body.indexOf('<details>'))
+  })
+
+  it('offers the pre-existing backlog as an expandable section', () => {
+    const input = backlogScenario()
+    expect(input.blocking).toEqual([])
+    expect(input.allIssues.length).toBeGreaterThan(0)
+
+    const body = renderComment(input)
+    // Still a pass: the backlog is context, not this PR's verdict.
+    expect(body).toContain('**passed**')
+    expect(body).toContain('No new localization issues')
+    expect(body).toContain(
+      `<details><summary><b>Pre-existing issues</b> · ${input.allIssues.length} — not introduced by this PR</summary>`,
+    )
+  })
+
+  it('names the pre-existing keys, not just a count', () => {
+    const body = renderComment(backlogScenario())
+    expect(body).toContain('| `old_a` |')
+    expect(body).toContain('**Missing translations** ·')
+    expect(body).toContain('| Languages | Missing | Empty | Total |')
+  })
+
+  it('does not nest one collapsible block inside another', () => {
+    const body = renderComment(backlogScenario())
+    const opens = (body.match(/<details>/g) ?? []).length
+    const closes = (body.match(/<\/details>/g) ?? []).length
+    expect(opens).toBe(closes)
+    // Exactly one block: the backlog. Its class sections render flat inside it.
+    expect(opens).toBe(1)
+  })
+
+  it('omits the backlog section when there is no backlog', () => {
+    const body = renderComment(cleanScenario())
+    expect(body).not.toContain('Pre-existing')
+    expect(body).not.toContain('<details>')
+  })
+
+  it('renders a passing report that carries a backlog', () => {
+    expect(renderComment(backlogScenario())).toMatchSnapshot()
   })
 
   it('keeps the marker when the body has to be truncated', () => {
